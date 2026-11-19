@@ -104,6 +104,36 @@ fn charger_noms_champions() -> HashMap<i64, String> {
     noms
 }
 
+/// Pendant une partie, le jeu lui-même ouvre une API sur le port 2999 (sans mot de passe).
+/// Elle donne les 10 joueurs, leurs champions, leur KDA, leurs items...
+/// Renvoie `None` si aucune partie n'est en cours.
+fn partie_en_cours(client: &Client) -> Option<Value> {
+    let rep = client
+        .get("https://127.0.0.1:2999/liveclientdata/allgamedata")
+        .send()
+        .ok()?;
+    rep.json().ok()
+}
+
+/// Affiche le tableau des joueurs de la partie.
+fn afficher_partie(partie: &Value) {
+    let mode = partie["gameData"]["gameMode"].as_str().unwrap_or("?");
+    let temps = partie["gameData"]["gameTime"].as_f64().unwrap_or(0.0) as i64;
+    println!("\n--- Partie {mode} | {}:{:02} ---", temps / 60, temps % 60);
+    if let Some(joueurs) = partie["allPlayers"].as_array() {
+        for j in joueurs {
+            let champion = j["championName"].as_str().unwrap_or("?");
+            let pseudo = j["riotIdGameName"].as_str().unwrap_or("?");
+            let equipe = j["team"].as_str().unwrap_or("?");
+            let s = &j["scores"];
+            println!(
+                "{equipe:<6} {champion:<14} {}/{}/{}  {pseudo}",
+                s["kills"], s["deaths"], s["assists"]
+            );
+        }
+    }
+}
+
 fn main() {
     println!("stat-traque : en attente du client League of Legends...");
 
@@ -120,6 +150,7 @@ fn main() {
 
     let mut lcu: Option<Lcu> = None;
     let mut dernier_champion: i64 = 0;
+    let mut tour: u32 = 0; // compte les secondes écoulées
 
     // Boucle infinie : toutes les secondes on regarde où on en est.
     loop {
@@ -151,6 +182,14 @@ fn main() {
                         lcu = None;
                     }
                 }
+            }
+        }
+
+        // Toutes les 10 secondes, si une partie est en cours, on affiche le tableau.
+        tour += 1;
+        if tour % 10 == 0 {
+            if let Some(partie) = partie_en_cours(&client) {
+                afficher_partie(&partie);
             }
         }
 

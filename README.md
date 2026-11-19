@@ -1,4 +1,4 @@
-﻿# lol-companion
+﻿# stat-traque
 
 Alternative légère à Blitz pour League of Legends, écrite en Rust.
 Objectif : peu de RAM, un seul .exe, utilisable par des amis.

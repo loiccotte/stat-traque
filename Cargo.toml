@@ -1,5 +1,5 @@
-[package]
-name = "lol-companion"
+﻿[package]
+name = "stat-traque"
 version = "0.1.0"
 edition = "2024"
 

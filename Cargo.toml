@@ -1,6 +1,19 @@
 ﻿[package]
 name = "stat-traque"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+# reqwest : pour faire des requêtes HTTP (au client LoL et à Data Dragon).
+# native-tls = utilise le chiffrement de Windows (plus léger à compiler).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls"] }
+# serde_json : pour lire le JSON renvoyé par le client.
+serde_json = "1"
+# base64 : le client LoL demande un mot de passe encodé en base64.
+base64 = "0.22"
+
+# Pour un .exe le plus petit et rapide possible quand on compile en "release".
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

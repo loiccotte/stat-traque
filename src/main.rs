@@ -104,6 +104,51 @@ fn charger_noms_champions() -> HashMap<i64, String> {
     noms
 }
 
+// ---------- Clé API Riot ----------
+// La clé est enregistrée dans %APPDATA%\stat-traque\cle.txt (donc hors du projet :
+// elle ne peut jamais finir sur GitHub par accident).
+
+fn chemin_cle() -> std::path::PathBuf {
+    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    std::path::Path::new(&base).join("stat-traque").join("cle.txt")
+}
+
+fn lire_cle() -> Option<String> {
+    let cle = std::fs::read_to_string(chemin_cle()).ok()?;
+    let cle = cle.trim().to_string();
+    if cle.is_empty() { None } else { Some(cle) }
+}
+
+fn sauver_cle(cle: &str) -> std::io::Result<()> {
+    let chemin = chemin_cle();
+    if let Some(dossier) = chemin.parent() {
+        std::fs::create_dir_all(dossier)?;
+    }
+    std::fs::write(chemin, cle.trim())
+}
+
+/// Teste la clé auprès de Riot (serveur EUW) et dit si elle est valable.
+/// Une clé expirée renvoie une erreur 401 ou 403.
+fn verifier_cle(client: &Client) {
+    let Some(cle) = lire_cle() else {
+        println!("Clé API : aucune. Ajoute-la avec :  stat-traque cle RGAPI-xxxxxxxx");
+        return;
+    };
+    let rep = client
+        .get("https://euw1.api.riotgames.com/lol/status/v4/platform-data")
+        .header("X-Riot-Token", cle)
+        .send();
+    match rep.map(|r| r.status().as_u16()) {
+        Ok(200) => println!("Clé API : valide."),
+        Ok(401) | Ok(403) => println!(
+            "Clé API : EXPIRÉE ou invalide. Régénère-la sur https://developer.riotgames.com \
+             puis lance :  stat-traque cle RGAPI-xxxxxxxx"
+        ),
+        Ok(code) => println!("Clé API : réponse inattendue de Riot (code {code})."),
+        Err(_) => println!("Clé API : impossible de joindre Riot (internet ?)."),
+    }
+}
+
 /// Pendant une partie, le jeu lui-même ouvre une API sur le port 2999 (sans mot de passe).
 /// Elle donne les 10 joueurs, leurs champions, leur KDA, leurs items...
 /// Renvoie `None` si aucune partie n'est en cours.
@@ -135,6 +180,20 @@ fn afficher_partie(partie: &Value) {
 }
 
 fn main() {
+    // Si on lance "stat-traque cle RGAPI-xxxx", on enregistre la clé et on s'arrête.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "cle" {
+        if !args[2].starts_with("RGAPI-") {
+            println!("Ça ne ressemble pas à une clé Riot (elle commence par RGAPI-).");
+            return;
+        }
+        match sauver_cle(&args[2]) {
+            Ok(()) => println!("Clé enregistrée dans {}", chemin_cle().display()),
+            Err(e) => println!("Impossible d'enregistrer la clé : {e}"),
+        }
+        return;
+    }
+
     println!("stat-traque : en attente du client League of Legends...");
 
     // Le client LoL utilise un certificat "fait maison" : on dit à reqwest de l'accepter.
@@ -144,6 +203,8 @@ fn main() {
         .timeout(Duration::from_secs(3))
         .build()
         .expect("impossible de créer le client HTTP");
+
+    verifier_cle(&client);
 
     let noms = charger_noms_champions();
     println!("{} champions chargés.", noms.len());

@@ -177,6 +177,16 @@ pub fn lire() -> EtatAffichage {
     ETAT.lock().unwrap().clone().unwrap_or_default()
 }
 
+/// Lit une PARTIE de l'état sans tout copier (ex : l'overlay ne veut que les rangs).
+/// `f` s'exécute sous le verrou : elle doit être courte et ne pas appeler `modifier`.
+pub fn avec<R>(f: impl FnOnce(&EtatAffichage) -> R) -> R {
+    let verrou = ETAT.lock().unwrap();
+    match verrou.as_ref() {
+        Some(e) => f(e),
+        None => f(&EtatAffichage::default()),
+    }
+}
+
 /// Change à chaque modification : l'interface ne copie l'état que si ça a changé.
 pub fn version() -> u64 {
     VERSION.load(Ordering::Acquire)

@@ -2286,7 +2286,6 @@ dependencies = [
  "tungstenite",
  "ureq",
  "windows-sys 0.59.0",
- "winit",
 ]
 
 [[package]]

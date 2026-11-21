@@ -12,7 +12,7 @@
 #[cfg(windows)]
 mod windows_impl {
     use std::ptr::null_mut;
-    use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
     use std::sync::mpsc::Sender;
     use std::sync::{Mutex, OnceLock};
 
@@ -42,6 +42,9 @@ mod windows_impl {
     /// Message envoyé par Windows quand la barre des tâches est recréée
     /// (redémarrage de l'Explorateur) : il faut alors remettre l'icône.
     static MSG_BARRE_RECREEE: AtomicU32 = AtomicU32::new(0);
+    /// Un redessin de l'overlay est déjà demandé (message posté, pas encore traité) :
+    /// pendant une rafale de changements, on ne poste qu'UN message.
+    static REDESSIN_EN_ATTENTE: AtomicBool = AtomicBool::new(false);
 
     /// Texte Rust -> texte Windows (UTF-16 terminé par un zéro).
     fn utf16(s: &str) -> Vec<u16> {
@@ -108,6 +111,9 @@ mod windows_impl {
                 0
             }
             MSG_OVERLAY_MAJ => {
+                // Remis à faux AVANT de lire l'état : un changement arrivé pendant le
+                // redessin postera un nouveau message (rien n'est perdu).
+                REDESSIN_EN_ATTENTE.store(false, Ordering::Release);
                 crate::ui::overlay_natif::redessiner();
                 0
             }
@@ -166,6 +172,13 @@ mod windows_impl {
     pub fn lancer(tx: Sender<Evenement>) {
         let _ = TX.set(tx);
         unsafe {
+            // Écrans à 125 % / 150 % : on dessine nous-mêmes à la bonne taille (texte net)
+            // au lieu de laisser Windows agrandir une image floue. (L'overlay adapte ses
+            // tailles à l'écran ; la fenêtre egui est un autre processus, déjà adaptée.)
+            use windows_sys::Win32::UI::HiDpi::{
+                SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            };
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             let instance = GetModuleHandleW(null_mut());
             let classe = utf16("stat-traque");
             let wc = WNDCLASSW {
@@ -234,7 +247,9 @@ mod windows_impl {
 
     /// Redessine l'overlay (s'il est affiché). N'importe quel thread.
     pub fn redessiner_overlay() {
-        poster(MSG_OVERLAY_MAJ, 0);
+        if !REDESSIN_EN_ATTENTE.swap(true, Ordering::AcqRel) {
+            poster(MSG_OVERLAY_MAJ, 0);
+        }
     }
 
     fn poster(msg: u32, wparam: usize) {

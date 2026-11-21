@@ -132,7 +132,8 @@ dans le processus après fermeture et 50,6 Mo avec l'overlay egui.
 | sans interface | 1,09 Mo | |
 | + eframe (glow, default_fonts) | 5,18 Mo (+4,1 Mo) | |
 | + toutes les features fusionnées | 5,47 Mo | |
-| + serde derive (protocole) + overlay GDI | 5,72 Mo (+0,25 Mo) | < 20 Mo |
+| + serde derive (protocole) + overlay GDI | 5,72 Mo (+0,25 Mo) | |
+| + corrections re-revue (DPI, écriture dédiée...) | 5,73 Mo | < 20 Mo |
 
 Polices : seules les polices de base d'egui (Ubuntu-Light, Hack, icônes egui) ; les polices
 emoji (`monochrome_emoji_fonts`) ne sont PAS activées. **À confirmer sous Windows** avec le vrai

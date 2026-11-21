@@ -87,7 +87,29 @@ pub fn ligne(m: &Message) -> String {
 /// Renvoie les messages qui ne changent pas l'état (`PremierPlan`, `Demo`) ;
 /// `None` sinon. Une ligne illisible est ignorée.
 pub fn appliquer(etat: &mut EtatAffichage, texte: &str) -> Option<Message> {
-    let message: Message = serde_json::from_str(texte).ok()?;
+    appliquer_message(etat, lire_message(texte)?)
+}
+
+/// Une ligne -> un message (None si illisible). Se fait SANS verrou (c'est le plus long).
+pub fn lire_message(texte: &str) -> Option<Message> {
+    serde_json::from_str(texte).ok()
+}
+
+/// Version de stat-traque, en 1re ligne (texte brut, pas du JSON : lisible même si
+/// le format des messages a changé entre deux versions).
+pub fn ligne_version() -> String {
+    format!("version={}", env!("CARGO_PKG_VERSION"))
+}
+
+/// La 1re ligne reçue vient-elle d'un stat-traque de la MÊME version que nous ?
+/// (Après une mise à jour automatique, l'exe sur le disque est plus récent que
+/// le processus de l'icône qui tourne encore : les formats peuvent différer.)
+pub fn meme_version(premiere_ligne: &str) -> bool {
+    premiere_ligne.trim() == ligne_version()
+}
+
+/// Applique un message déjà lu (rapide : à faire sous verrou).
+pub fn appliquer_message(etat: &mut EtatAffichage, message: Message) -> Option<Message> {
     match message {
         Message::Etat(nouveau) => {
             let mut nouveau = *nouveau;
@@ -148,6 +170,14 @@ mod tests {
         // Un message d'état seul ne fait pas perdre les gros champs déjà reçus.
         assert!(appliquer(&mut recu, &ligne(&Message::Etat(Box::new(change)))).is_none());
         assert!(recu.tier_list.is_some());
+    }
+
+    #[test]
+    fn controle_de_version() {
+        assert!(meme_version(&ligne_version()));
+        assert!(meme_version(&format!("{}\r", ligne_version())));
+        assert!(!meme_version("version=0.0.1"));
+        assert!(!meme_version("{\"Etat\":{}}"));
     }
 
     #[test]

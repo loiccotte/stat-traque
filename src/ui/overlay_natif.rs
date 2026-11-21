@@ -12,31 +12,47 @@
 //!  - WS_EX_NOACTIVATE : ne prend jamais le focus au jeu ;
 //!  - WS_EX_TOOLWINDOW : pas de bouton dans la barre des tâches.
 //!
+//! Écrans à 125 % / 150 % : le processus est « DPI aware » (tray.rs) ; toutes les
+//! tailles ci-dessous sont en pixels « à 100 % » et multipliées par l'échelle de
+//! l'écran où se trouve l'overlay (police recréée si on change d'écran).
+//!
 //! Conformité Riot : fenêtre à part (aucune injection), rangs officiels seulement,
 //! aucun timer. Invisible en « Plein écran » exclusif : mode « Sans bordure » requis.
 
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::{Mutex, Once};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::format::{self, Cellule};
 
 static FENETRE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
 static POLICE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
-/// Contenu affiché et largeur de chaque colonne (calculés hors de WM_PAINT).
-static CONTENU: Mutex<(Vec<Vec<Cellule>>, Vec<i32>)> = Mutex::new((Vec::new(), Vec::new()));
+/// DPI pour lequel la police a été créée (96 = 100 %).
+static DPI_POLICE: AtomicU32 = AtomicU32::new(0);
+/// Ce qui est affiché : grille, largeur de chaque colonne, DPI utilisé.
+/// Sert aussi à ne RIEN refaire si l'état a changé sans toucher aux rangs.
+static CONTENU: Mutex<Contenu> = Mutex::new(Contenu { grille: Vec::new(), largeurs: Vec::new(), dpi: 0 });
 static CLASSE: Once = Once::new();
 
+struct Contenu {
+    grille: Vec<Vec<Cellule>>,
+    largeurs: Vec<i32>,
+    dpi: u32,
+}
+
+// Tailles en pixels à 100 % (multipliées par l'échelle de l'écran).
 const MARGE: i32 = 8;
 const ESPACE_COLONNES: i32 = 10;
 /// Espace entre l'équipe bleue (colonnes 0-2) et la rouge (3-5).
 const ESPACE_EQUIPES: i32 = 18;
 const HAUTEUR_LIGNE: i32 = 19;
+const TAILLE_POLICE: i32 = 15;
 /// Opacité de la fenêtre (0 = invisible, 255 = opaque).
 const OPACITE: u8 = 215;
 
@@ -48,15 +64,33 @@ fn rgb([r, g, b]: [u8; 3]) -> u32 {
     r as u32 | (g as u32) << 8 | (b as u32) << 16
 }
 
-/// Police « Segoe UI » semi-grasse, créée une fois et gardée.
-unsafe fn police() -> HFONT {
+/// `valeur` (pixels à 100 %) à l'échelle d'un écran de `dpi` points par pouce.
+fn echelle(valeur: i32, dpi: u32) -> i32 {
+    valeur * dpi as i32 / 96
+}
+
+/// DPI de l'écran où se trouve la fenêtre (96 si inconnu).
+unsafe fn dpi(fenetre: HWND) -> u32 {
+    match GetDpiForWindow(fenetre) {
+        0 => 96,
+        d => d,
+    }
+}
+
+/// Police « Segoe UI » semi-grasse pour ce DPI (recréée seulement si le DPI change).
+unsafe fn police(dpi: u32) -> HFONT {
     let p = POLICE.load(Ordering::Acquire);
-    if !p.is_null() {
+    if !p.is_null() && DPI_POLICE.load(Ordering::Acquire) == dpi {
         return p;
     }
+    if !p.is_null() {
+        DeleteObject(p);
+    }
     let nom = utf16("Segoe UI");
-    let f = CreateFontW(-15, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET as u32, 0, 0, ANTIALIASED_QUALITY as u32, 0, nom.as_ptr());
+    let hauteur = -echelle(TAILLE_POLICE, dpi);
+    let f = CreateFontW(hauteur, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET as u32, 0, 0, ANTIALIASED_QUALITY as u32, 0, nom.as_ptr());
     POLICE.store(f, Ordering::Release);
+    DPI_POLICE.store(dpi, Ordering::Release);
     f
 }
 
@@ -68,10 +102,22 @@ pub unsafe fn afficher(visible: bool) {
         (false, false) => {
             DestroyWindow(fenetre);
             FENETRE.store(null_mut(), Ordering::Release);
-            CONTENU.lock().unwrap().0.clear();
+            let mut c = CONTENU.lock().unwrap();
+            c.grille.clear();
+            c.dpi = 0;
         }
         _ => {}
     }
+}
+
+/// Rectangle (x, y, largeur, hauteur) de l'écran virtuel (tous les moniteurs).
+unsafe fn ecran_virtuel() -> (i32, i32, i32, i32) {
+    (
+        GetSystemMetrics(SM_XVIRTUALSCREEN),
+        GetSystemMetrics(SM_YVIRTUALSCREEN),
+        GetSystemMetrics(SM_CXVIRTUALSCREEN),
+        GetSystemMetrics(SM_CYVIRTUALSCREEN),
+    )
 }
 
 unsafe fn creer() {
@@ -88,15 +134,17 @@ unsafe fn creer() {
         };
         RegisterClassW(&wc);
     });
-    let [x, y] = format::position_overlay(crate::stockage::Reglages::charger().get("overlay_position"));
+    // Position des réglages, ramenée sur l'écran (réglage faux, écran débranché...).
+    let voulue = format::position_overlay(crate::stockage::Reglages::charger().get("overlay_position"));
+    let (x, y) = format::borner_position(voulue, ecran_virtuel());
     let titre = utf16("stat-traque overlay");
     let fenetre = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
         classe.as_ptr(),
         titre.as_ptr(),
         WS_POPUP,
-        x as i32,
-        y as i32,
+        x,
+        y,
         100,
         40,
         null_mut(),
@@ -113,17 +161,26 @@ unsafe fn creer() {
     ShowWindow(fenetre, SW_SHOWNOACTIVATE);
 }
 
-/// Relit l'état, recalcule la taille, et demande un WM_PAINT. Thread de l'icône.
+/// Relit les rangs ; si rien n'a changé à l'écran, ne fait RIEN. Sinon recalcule
+/// la taille et demande un WM_PAINT. Thread de l'icône.
 pub unsafe fn redessiner() {
     let fenetre = FENETRE.load(Ordering::Acquire);
     if fenetre.is_null() {
         return;
     }
-    let etat = crate::affichage::lire(); // les gros champs sont des Arc : copie légère
-    let grille = format::grille_overlay(&etat.rangs, etat.donnees.as_deref(), etat.cle_api);
+    // Seulement ce qu'il faut, lu sous le verrou (pas de copie de tout l'état).
+    let grille =
+        crate::affichage::avec(|e| format::grille_overlay(&e.rangs, e.donnees.as_deref(), e.cle_api));
+    let dpi = dpi(fenetre);
+    {
+        let c = CONTENU.lock().unwrap();
+        if c.grille == grille && c.dpi == dpi {
+            return; // l'état a changé, mais pas les rangs : aucun dessin
+        }
+    }
     // Largeur de chaque colonne = son texte le plus large.
     let dc = GetDC(fenetre);
-    let ancienne = SelectObject(dc, police());
+    let ancienne = SelectObject(dc, police(dpi));
     let colonnes = grille.iter().map(Vec::len).max().unwrap_or(0);
     let mut largeurs = vec![0i32; colonnes];
     for ligne in &grille {
@@ -136,16 +193,21 @@ pub unsafe fn redessiner() {
     }
     SelectObject(dc, ancienne);
     ReleaseDC(fenetre, dc);
-    let largeur = 2 * MARGE + largeurs.iter().sum::<i32>() + ecarts(colonnes);
-    let hauteur = 2 * MARGE + HAUTEUR_LIGNE * grille.len() as i32;
-    *CONTENU.lock().unwrap() = (grille, largeurs);
+    let largeur = 2 * echelle(MARGE, dpi) + largeurs.iter().sum::<i32>() + ecarts(colonnes, dpi);
+    let hauteur = 2 * echelle(MARGE, dpi) + echelle(HAUTEUR_LIGNE, dpi) * grille.len() as i32;
+    *CONTENU.lock().unwrap() = Contenu { grille, largeurs, dpi };
     SetWindowPos(fenetre, HWND_TOPMOST, 0, 0, largeur, hauteur, SWP_NOMOVE | SWP_NOACTIVATE);
     InvalidateRect(fenetre, null_mut(), 1);
 }
 
+/// Espace avant la colonne `i` (plus grand entre les deux équipes).
+fn ecart_avant(i: usize, dpi: u32) -> i32 {
+    echelle(if i == 3 { ESPACE_EQUIPES } else { ESPACE_COLONNES }, dpi)
+}
+
 /// Espace total entre les colonnes.
-fn ecarts(colonnes: usize) -> i32 {
-    (1..colonnes).map(|i| if i == 3 { ESPACE_EQUIPES } else { ESPACE_COLONNES }).sum()
+fn ecarts(colonnes: usize, dpi: u32) -> i32 {
+    (1..colonnes).map(|i| ecart_avant(i, dpi)).sum()
 }
 
 unsafe fn peindre(fenetre: HWND) {
@@ -161,21 +223,21 @@ unsafe fn peindre(fenetre: HWND) {
     FrameRect(dc, &zone, bord);
     DeleteObject(bord);
 
-    let ancienne = SelectObject(dc, police());
-    SetBkMode(dc, TRANSPARENT as i32);
     let contenu = CONTENU.lock().unwrap();
-    let (grille, largeurs) = &*contenu;
-    for (n, ligne) in grille.iter().enumerate() {
-        let mut x = MARGE;
-        let y = MARGE + n as i32 * HAUTEUR_LIGNE;
+    let dpi = contenu.dpi.max(96);
+    let ancienne = SelectObject(dc, police(dpi));
+    SetBkMode(dc, TRANSPARENT as i32);
+    for (n, ligne) in contenu.grille.iter().enumerate() {
+        let mut x = echelle(MARGE, dpi);
+        let y = echelle(MARGE, dpi) + n as i32 * echelle(HAUTEUR_LIGNE, dpi);
         for (i, c) in ligne.iter().enumerate() {
             if i > 0 {
-                x += if i == 3 { ESPACE_EQUIPES } else { ESPACE_COLONNES };
+                x += ecart_avant(i, dpi);
             }
             SetTextColor(dc, rgb(c.couleur));
             let t: Vec<u16> = c.texte.encode_utf16().collect();
             TextOutW(dc, x, y, t.as_ptr(), t.len() as i32);
-            x += largeurs.get(i).copied().unwrap_or(0);
+            x += contenu.largeurs.get(i).copied().unwrap_or(0);
         }
     }
     SelectObject(dc, ancienne);
@@ -186,6 +248,12 @@ unsafe extern "system" fn procedure(fenetre: HWND, msg: u32, wparam: WPARAM, lpa
     match msg {
         WM_PAINT => {
             peindre(fenetre);
+            0
+        }
+        // Déplacée sur un écran d'une autre échelle : nouvelle police, nouvelle taille.
+        WM_DPICHANGED => {
+            CONTENU.lock().unwrap().dpi = 0; // force le recalcul
+            redessiner();
             0
         }
         // Les clics « traversent » : la fenêtre se déclare transparente à la souris.

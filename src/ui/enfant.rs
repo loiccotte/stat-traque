@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use eframe::egui;
 
 use super::ecrans::{self, Ecran};
-use super::protocole::{appliquer, Message};
+use super::protocole::{appliquer_message, lire_message, meme_version, Message};
 use super::{demo, format, overlay, theme};
 use crate::affichage::EtatAffichage;
 
@@ -28,6 +28,9 @@ struct Partage {
     premier_plan: bool,
     /// Entrée fermée : il faut fermer la fenêtre.
     fermer: bool,
+    /// Le processus de l'icône n'a pas la même version que nous (mise à jour
+    /// installée pendant qu'il tournait) : on n'affiche qu'un message.
+    autre_version: bool,
 }
 
 static PARTAGE: Mutex<Option<Partage>> = Mutex::new(None);
@@ -51,10 +54,22 @@ pub fn lancer(overlay: bool) {
         .name("lecture".into())
         .spawn(|| {
             let entree = std::io::stdin();
-            for ligne in entree.lock().lines() {
+            let mut lignes = entree.lock().lines();
+            // 1re ligne : la version du processus de l'icône.
+            let version_ok = lignes.next().and_then(Result::ok).is_some_and(|l| meme_version(&l));
+            if !version_ok {
+                partage(|p| p.autre_version = true);
+                redessiner();
+            }
+            for ligne in lignes {
                 let Ok(ligne) = ligne else { break };
+                if !version_ok {
+                    continue; // format peut-être différent : on ne lit rien
+                }
+                // Lecture du JSON (le plus long) HORS du verrou : la fenêtre n'attend pas.
+                let Some(message) = lire_message(&ligne) else { continue };
                 partage(|p| {
-                    match appliquer(&mut p.etat, &ligne) {
+                    match appliquer_message(&mut p.etat, message) {
                         Some(Message::PremierPlan) => p.premier_plan = true,
                         Some(Message::Demo) => p.etat.donnees = Some(Arc::new(demo::donnees())),
                         _ => {}
@@ -152,6 +167,20 @@ impl eframe::App for Appli {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if partage(|p| p.autre_version) {
+            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::FOND)).show(ui, |ui| {
+                ui.add_space(80.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Mise à jour installée : redémarre stat-traque").color(theme::OR).size(20.0));
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("Clic droit sur l'icône près de l'horloge, Quitter, puis relance stat-traque.")
+                            .color(theme::TEXTE_DOUX),
+                    );
+                });
+            });
+            return;
+        }
         // Copie de l'état seulement s'il a changé.
         if let Some((etat, version)) = partage(|p| (p.version != self.version).then(|| (p.etat.clone(), p.version))) {
             self.etat = etat;

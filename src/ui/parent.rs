@@ -18,11 +18,11 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Condvar, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::protocole::{ligne, Expediteur, Message};
+use super::protocole::{ligne, ligne_version, Expediteur, Message};
 use crate::affichage;
 use crate::evenement::Evenement;
 use crate::gameflow::Phase;
@@ -46,6 +46,11 @@ struct Demandes {
     enfant: Option<u32>,
     /// L'enfant vient de se terminer (posé par le thread qui attend sa fin).
     enfant_fini: bool,
+    /// Nombre de « Ouvrir » demandés depuis le lancement de l'app. Sert à ne pas
+    /// perdre un « Ouvrir » arrivé PENDANT une fermeture (voir `lancer_enfant`).
+    ouvertures: u64,
+    /// Le thread d'écriture est en train d'envoyer un lot à l'enfant.
+    ecriture_en_cours: bool,
 }
 
 static DEMANDES: Mutex<Demandes> = Mutex::new(Demandes {
@@ -55,7 +60,11 @@ static DEMANDES: Mutex<Demandes> = Mutex::new(Demandes {
     phase: None,
     enfant: None,
     enfant_fini: false,
+    ouvertures: 0,
+    ecriture_en_cours: false,
 });
+/// Un enfant qui ne se ferme pas dans ce délai après la demande est arrêté de force.
+const DELAI_FERMETURE: Duration = Duration::from_secs(2);
 /// Réveille le thread « fenetre » (et ceux qui attendent la fermeture).
 static SIGNAL: Condvar = Condvar::new();
 static DEMARRAGE: Once = Once::new();
@@ -97,6 +106,7 @@ pub fn ouvrir() {
     modifier(|d| {
         d.fenetre = true;
         d.premier_plan = true;
+        d.ouvertures += 1;
         if cfg!(not(windows)) {
             d.overlay = false; // Linux : un seul enfant à la fois
         }
@@ -149,17 +159,41 @@ pub fn attendre_fermeture() {
     }
 }
 
-/// Ferme tout et attend la fin de l'enfant, au plus `delai` (menu « Quitter »).
+/// Ferme tout et attend la fin de l'enfant, au plus `delai` (menu « Quitter ») ;
+/// passé ce délai, l'enfant (figé ?) est arrêté de force.
 pub fn fermer_et_attendre(delai: Duration) {
     fermer();
     let limite = Instant::now() + delai;
     let mut d = DEMANDES.lock().unwrap();
-    while d.enfant.is_some() {
+    while let Some(pid) = d.enfant {
         let reste = limite.saturating_duration_since(Instant::now());
         if reste.is_zero() {
+            tuer(pid);
             break;
         }
         d = SIGNAL.wait_timeout(d, reste).unwrap().0;
+    }
+}
+
+/// Arrête de force un processus (enfant figé qui ne lit plus son entrée).
+fn tuer(pid: u32) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        // SAFETY : appels Windows simples sur un numéro de processus.
+        unsafe {
+            let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if !h.is_null() {
+                TerminateProcess(h, 1);
+                CloseHandle(h);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // Linux (développement) : la commande `kill` suffit.
+        let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
     }
 }
 
@@ -221,6 +255,7 @@ fn changement_de_phase(ancienne: Option<Phase>, phase: Option<Phase>) {
     modifier(|d| {
         if ouvrir_auto {
             d.fenetre = true;
+            d.ouvertures += 1;
         }
         if fin_de_partie {
             d.overlay = false; // l'overlay disparaît tout seul après la partie
@@ -258,6 +293,11 @@ fn boucle() {
 }
 
 /// Lance l'enfant, lui envoie l'état à chaque changement, revient à sa fin.
+///
+/// Trois threads coopèrent :
+///  - celui-ci (« fenetre ») décide QUOI envoyer et ne bloque jamais sur l'enfant ;
+///  - « ecriture » écrit dans l'entrée de l'enfant (peut bloquer si l'enfant est figé) ;
+///  - un 3e attend la fin du processus enfant.
 fn lancer_enfant(mode: Mode) -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     let mut commande = Command::new(exe);
@@ -266,71 +306,131 @@ fn lancer_enfant(mode: Mode) -> std::io::Result<()> {
         commande.arg("overlay");
     }
     let mut enfant = commande.stdin(Stdio::piped()).stdout(Stdio::null()).spawn()?;
-    let Some(entree) = enfant.stdin.take() else { return Ok(()) };
+    let Some(mut entree) = enfant.stdin.take() else { return Ok(()) };
     let pid = enfant.id();
+    // « Ouvrir » déjà pris en compte par ce lancement.
+    let mut ouvertures_traitees = 0;
     modifier(|d| {
         d.enfant = Some(pid);
         d.enfant_fini = false;
+        d.ecriture_en_cours = false;
+        ouvertures_traitees = d.ouvertures;
     });
     prevenir_cerveau();
-    // Un petit thread attend la fin de l'enfant (croix, plantage ou fin normale).
+    // Thread d'attente de la fin de l'enfant (croix, plantage ou fin normale).
     std::thread::spawn(move || {
         let _ = enfant.wait();
         modifier(|d| d.enfant_fini = true);
     });
+    // Thread d'écriture : reçoit des lots de lignes, au plus un à la fois.
+    let (vers_ecriture, lots) = mpsc::sync_channel::<Vec<String>>(1);
+    std::thread::Builder::new().name("ecriture".into()).spawn(move || {
+        // 1re ligne : notre version (l'enfant vérifie qu'il est de la même version).
+        let mut ok = writeln!(entree, "{}", ligne_version()).is_ok();
+        for lot in lots {
+            for l in &lot {
+                ok = ok && writeln!(entree, "{l}").is_ok();
+            }
+            ok = ok && entree.flush().is_ok();
+            modifier(|d| d.ecriture_en_cours = false);
+            if !ok {
+                break; // l'enfant ne lit plus : le thread d'attente verra sa fin
+            }
+        }
+        // Fin de boucle = canal fermé : on lâche l'entrée -> l'enfant se ferme.
+    })?;
 
     let mut expediteur = Expediteur::default();
     let mut version_envoyee = None;
-    // L'entrée de l'enfant ; `None` = fermée (on lui a demandé de se fermer).
-    let mut entree = Some(entree);
-    if DEMO.load(Ordering::Relaxed) {
-        envoyer(&mut entree, &[ligne(&Message::Demo)]);
-    }
+    // `Some` tant qu'on peut écrire ; `None` = fermeture demandée (à cet instant).
+    let mut vers_ecriture = Some(vers_ecriture);
+    let mut fermeture_depuis: Option<Instant> = None;
+    let mut deja_tue = false;
+    // Démonstration : le message « Demo » part dans le 1er lot.
+    let mut demo = DEMO.load(Ordering::Relaxed);
     loop {
         // Attendre : un changement d'état, une demande, ou la fin de l'enfant.
-        let premier_plan = {
+        let lot = {
             let mut d = DEMANDES.lock().unwrap();
             loop {
                 if d.enfant_fini {
                     break;
                 }
                 let garder = d.mode_voulu() == Some(mode);
-                if entree.is_some() && (!garder || d.premier_plan || version_envoyee != Some(affichage::version())) {
+                let a_envoyer = d.premier_plan || version_envoyee != Some(affichage::version());
+                if vers_ecriture.is_some() && (!garder || (a_envoyer && !d.ecriture_en_cours)) {
                     break;
                 }
-                d = SIGNAL.wait(d).unwrap(); // 0 % CPU ici
+                d = match fermeture_depuis {
+                    // Fermeture demandée : on attend sa fin, mais pas indéfiniment
+                    // (un enfant figé ne lirait jamais la fin de son entrée).
+                    Some(depuis) if !deja_tue => {
+                        let reste = (depuis + DELAI_FERMETURE).saturating_duration_since(Instant::now());
+                        if reste.is_zero() {
+                            tuer(pid);
+                            deja_tue = true;
+                            continue;
+                        }
+                        SIGNAL.wait_timeout(d, reste).unwrap().0
+                    }
+                    _ => SIGNAL.wait(d).unwrap(), // 0 % CPU ici
+                };
             }
             if d.enfant_fini {
                 break;
             }
             if d.mode_voulu() != Some(mode) {
-                // Fermer l'entrée = « ferme-toi ». On attend ensuite sa fin (boucle).
-                entree = None;
+                // Fermer le canal : le thread d'écriture lâche l'entrée = « ferme-toi ».
+                vers_ecriture = None;
+                fermeture_depuis = Some(Instant::now());
                 continue;
             }
-            std::mem::take(&mut d.premier_plan)
+            let mut lot = Vec::new();
+            if std::mem::take(&mut demo) {
+                lot.push(ligne(&Message::Demo));
+            }
+            if std::mem::take(&mut d.premier_plan) {
+                lot.push(ligne(&Message::PremierPlan));
+                ouvertures_traitees = d.ouvertures;
+            }
+            d.ecriture_en_cours = true;
+            lot
         };
-        let mut lignes = Vec::new();
+        let mut lot = lot;
         let version = affichage::version();
         if version_envoyee != Some(version) {
             // On lit la version AVANT l'état : si un changement arrive entre les deux,
             // on renverra au prochain tour (jamais d'état en retard). Les changements
-            // arrivés pendant un envoi sont regroupés : seul le dernier état part.
-            lignes = expediteur.lignes(affichage::lire());
+            // arrivés pendant une écriture sont regroupés : seul le dernier état part.
+            let mut etat = expediteur.lignes(affichage::lire());
+            etat.append(&mut lot);
+            lot = etat;
             version_envoyee = Some(version);
         }
-        if premier_plan {
-            lignes.push(ligne(&Message::PremierPlan));
+        if let Some(t) = &vers_ecriture {
+            match t.try_send(lot) {
+                Ok(()) => {}
+                // Ne devrait pas arriver (un seul lot à la fois) : on renverra l'état.
+                Err(mpsc::TrySendError::Full(_)) => version_envoyee = None,
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    // Le thread d'écriture s'est arrêté (l'enfant ne lit plus) : fermeture
+                    // considérée comme demandée (avec arrêt forcé après le délai).
+                    modifier(|d| d.ecriture_en_cours = false);
+                    vers_ecriture = None;
+                    fermeture_depuis = Some(Instant::now());
+                }
+            }
         }
-        envoyer(&mut entree, &lignes);
     }
-    drop(entree);
+    drop(vers_ecriture);
     // L'enfant est fini. S'il s'est fermé TOUT SEUL (croix, plantage), on oublie
-    // la demande, sinon le thread le relancerait aussitôt.
+    // la demande, sinon le thread le relancerait aussitôt. SAUF si un « Ouvrir »
+    // est arrivé que cet enfant n'a jamais reçu (pendant sa fermeture) : on rouvre.
     modifier(|d| {
         d.enfant = None;
         d.enfant_fini = false;
-        if d.mode_voulu() == Some(mode) {
+        let ouvrir_en_attente = mode == Mode::Principale && d.ouvertures != ouvertures_traitees;
+        if d.mode_voulu() == Some(mode) && !ouvrir_en_attente {
             match mode {
                 Mode::Principale => d.fenetre = false,
                 Mode::Overlay => d.overlay = false,
@@ -339,18 +439,4 @@ fn lancer_enfant(mode: Mode) -> std::io::Result<()> {
     });
     prevenir_cerveau();
     Ok(())
-}
-
-
-/// Écrit les lignes à l'enfant. S'il ne lit plus (fermé, planté), on ferme notre
-/// côté : le thread d'attente signalera sa fin.
-fn envoyer(entree: &mut Option<std::process::ChildStdin>, lignes: &[String]) {
-    let Some(e) = entree.as_mut() else { return };
-    let mut ok = true;
-    for l in lignes {
-        ok &= writeln!(e, "{l}").is_ok();
-    }
-    if !ok || e.flush().is_err() {
-        *entree = None;
-    }
 }

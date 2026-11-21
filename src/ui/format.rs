@@ -204,6 +204,14 @@ pub fn position_overlay(texte: Option<&str>) -> [f32; 2] {
     }
 }
 
+/// Garde la position de l'overlay sur l'écran : `ecran` = (x, y, largeur, hauteur)
+/// de l'écran virtuel (tous les moniteurs). Au moins 40 pixels restent visibles.
+pub fn borner_position([x, y]: [f32; 2], (ex, ey, largeur, hauteur): (i32, i32, i32, i32)) -> (i32, i32) {
+    const VISIBLE: i32 = 40;
+    let borne = |v: f32, debut: i32, taille: i32| (v as i32).clamp(debut, debut + (taille - VISIBLE).max(0));
+    (borne(x, ex, largeur), borne(y, ey, hauteur))
+}
+
 /// Une case de l'overlay : texte + couleur (rouge, vert, bleu).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cellule {
@@ -284,6 +292,15 @@ pub fn ecart(ecart_pct: Option<f32>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn position_bornee_a_l_ecran() {
+        let ecran = (0, 0, 1920, 1080);
+        assert_eq!(borner_position([12.0, 12.0], ecran), (12, 12));
+        assert_eq!(borner_position([5000.0, -300.0], ecran), (1880, 0));
+        // Deux écrans, le 2e à gauche (x négatifs).
+        assert_eq!(borner_position([-1500.0, 10.0], (-1920, 0, 3840, 1080)), (-1500, 10));
+    }
+
     #[test]
     fn grille_de_l_overlay() {
         let e = crate::ui::demo::etat(Phase::InProgress);

@@ -29,6 +29,9 @@ stat-traque - alternative légère à Blitz (projet perso, gratuit)
      flash=f        Flash sur F (par défaut : D)
      runes=non      ne pas changer mes runes
      sorts=non      ne pas changer mes sorts
+     accepter=oui   accepter la partie automatiquement (désactivé par défaut)
+     maj=non        pas de mise à jour automatique
+   Lancement avec Windows : stat-traque demarrage oui   (ou non)
 Pour arrêter : ferme la fenêtre noire.
 "@ | Set-Content -Encoding UTF8 "$dossier\LISEZMOI.txt"
 

@@ -19,7 +19,7 @@ Priorité : P0 indispensable · P1 important · P2 bonus
 | F08 | Mode « proposer » : rien n'est appliqué sans 1 clic | 🔜 | P1 | contrôle total | T14 |
 | F09 | Contre-picks / matchup de lane | 💡 | P2 | — | T10 |
 | F10 | Tier list par rôle et par patch | 💡 | P2 | — | T10 |
-| F11 | Acceptation auto de la partie (option) | ⚠️ | P2 | désactivée par défaut | T09 |
+| F11 | Acceptation auto de la partie (option `accepter=oui`) | ✅ | P2 | désactivée par défaut, dans le client seulement (avant la partie) | T09 |
 
 ## 2. Chargement et partie en cours
 | ID | Feature | Statut | Prio | Mieux que Blitz | Tâche |
@@ -67,9 +67,9 @@ et on demande l'accord de l'auteur avant de distribuer une fiche avec l'app.
 | F26 | Icône tray (fait), fenêtre créée seulement à l'ouverture | 🔜 | P0 | RAM < 15 Mo au repos | T07 |
 | F27 | Cache Data Dragon hors ligne, mis à jour par patch | ✅ | P0 | démarrage instantané | T04 |
 | F28 | Multi-région (EUW, EUNE, NA, KR…) : `stat-traque region kr` | ✅ | P1 | — | T06 |
-| F29 | Multi-comptes (détecte le compte connecté) | 🔜 | P1 | aucun compte stat-traque | T09 |
-| F30 | Lancement avec Windows (option) | 🔜 | P1 | — | T25 |
-| F31 | Mise à jour automatique légère (GitHub Releases) | 🔜 | P1 | — | T25 |
+| F29 | Multi-comptes (détecte le compte connecté) | ✅ | P1 | aucun compte stat-traque | T09 |
+| F30 | Lancement avec Windows (`stat-traque demarrage oui`) | ✅ | P1 | clé Run de l'utilisateur, aucun service | T25 |
+| F31 | Mise à jour automatique légère (GitHub Releases) | ✅ | P1 | 1 vérification / jour, `maj=non` pour couper | T25 |
 | F32 | Mode console ultra léger conservé (`--console`) | ✅ | P2 | — | T07 |
 | F33 | FR / EN, thème clair / sombre | 💡 | P2 | — | T07 |
 | F34 | Zéro pub, zéro télémétrie, zéro compte | ✅ | P0 | c'est la différence principale | — |

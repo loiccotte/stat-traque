@@ -55,7 +55,7 @@ Les agents sont définis dans `.claude/agents/` ; les règles communes dans `CLA
 | T22 | Écran historique / profil | dev-ui | T21 | filtres champion / rôle |  |
 | T23 | Tests avec réponses LCU / Riot simulées | qualite | T05, T06 | `cargo test` vert | 🟡 15 tests unitaires |
 | T24 | Audit conformité Riot | qualite | T13, T18 | checklist validée |  |
-| T25 | Packaging : .exe unique, mise à jour, démarrage Windows | qualite | T08, T24 | release GitHub |  |
+| T25 | Packaging : .exe unique, mise à jour, démarrage Windows | qualite | T08, T24 | release GitHub | 🟡 release, mise à jour, démarrage faits ; audit T24 à faire |
 | T26 | Fiches matchup OTP : format + import CSV / Google Sheet | dev-donnees | T04 | une fiche Zed importée |  |
 | T27 | Détection de l'adversaire de lane en champ select | dev-lcu | T09 | bon adversaire en draft |  |
 | T28 | Affichage de la fiche en champ select et overlay | dev-ui | T14, T26, T27 | affichée en < 100 ms |  |

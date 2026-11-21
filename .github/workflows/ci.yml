@@ -21,7 +21,11 @@ jobs:
         run: cargo build --release
       - name: Budgets de performance
         shell: pwsh
-        run: ./scripts/mesure.ps1
+        run: |
+          # Pas de mise à jour automatique pendant la mesure (elle fausserait le CPU au repos).
+          New-Item -ItemType Directory -Force "$env:APPDATA\stat-traque" | Out-Null
+          "maj=non" | Set-Content "$env:APPDATA\stat-traque\reglages.txt"
+          ./scripts/mesure.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: stat-traque-exe

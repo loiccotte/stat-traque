@@ -138,6 +138,43 @@ impl RiotApi {
         self.requete(&self.plateforme, &chemin, Duree::Pendant(Duration::from_secs(600)))
     }
 
+    /// Partie en cours d'un joueur (spectator-v5) : les 10 participants avec leur puuid.
+    /// 404 (`Introuvable`) s'il n'est pas en partie.
+    pub fn partie_en_cours(&self, puuid: &str) -> Result<Value, ErreurApi> {
+        let chemin = format!("/lol/spectator/v5/active-games/by-summoner/{puuid}");
+        self.requete(&self.plateforme, &chemin, Duree::Pendant(Duration::from_secs(30)))
+    }
+
+    /// Maîtrise d'un joueur sur un champion (niveau, points) : bon indice « all time ».
+    pub fn maitrise(&self, puuid: &str, champion: u16) -> Result<Value, ErreurApi> {
+        let chemin = format!("/lol/champion-mastery/v4/champion-masteries/by-puuid/{puuid}/by-champion/{champion}");
+        self.requete(&self.plateforme, &chemin, Duree::Pendant(Duration::from_secs(6 * 3600)))
+    }
+
+    /// Joueurs Challenger / Grandmaster / Master en solo/duo (pour la collecte de stats).
+    /// `ligue` = "challengerleagues", "grandmasterleagues" ou "masterleagues".
+    pub fn ligue_haut_niveau(&self, ligue: &str) -> Result<Value, ErreurApi> {
+        let chemin = format!("/lol/league/v4/{ligue}/by-queue/RANKED_SOLO_5x5");
+        self.requete(&self.plateforme, &chemin, Duree::Pendant(Duration::from_secs(3600)))
+    }
+
+    /// Dernières parties CLASSÉES solo/duo (file 420) d'un joueur.
+    pub fn ids_parties_classees(&self, puuid: &str, nombre: u8) -> Result<Value, ErreurApi> {
+        let chemin = format!("/lol/match/v5/matches/by-puuid/{puuid}/ids?queue=420&type=ranked&count={nombre}");
+        self.requete(region_routage(&self.plateforme), &chemin, Duree::Pendant(Duration::from_secs(600)))
+    }
+
+    /// Détail d'une partie SANS la garder sur le disque (collecte de masse : on n'en
+    /// garde que les stats agrégées, pas les dizaines de Ko de JSON par partie).
+    pub fn partie_sans_cache(&self, id: &str) -> Result<Value, ErreurApi> {
+        let chemin = format!("/lol/match/v5/matches/{id}");
+        self.requete(region_routage(&self.plateforme), &chemin, Duree::Pendant(Duration::ZERO))
+    }
+
+    pub fn plateforme(&self) -> &str {
+        &self.plateforme
+    }
+
     /// Identifiants des dernières parties d'un joueur.
     pub fn ids_parties(&self, puuid: &str, nombre: u8) -> Result<Value, ErreurApi> {
         let chemin = format!("/lol/match/v5/matches/by-puuid/{puuid}/ids?count={nombre}");

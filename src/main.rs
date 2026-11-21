@@ -24,6 +24,9 @@
 // `?` = "si ça a raté, on s'arrête et on renvoie l'erreur".
 
 mod cerveau;
+mod champselect;
+mod collecte;
+mod compo;
 mod ddragon;
 mod enregistreur;
 mod evenement;
@@ -32,7 +35,9 @@ mod http;
 mod journal;
 mod lcu;
 mod live;
+mod rangs;
 mod rejeu;
+mod stats;
 mod riot_api;
 mod stockage;
 mod tray;
@@ -47,6 +52,7 @@ const AIDE: &str = "stat-traque — alternative légère à Blitz
   stat-traque cle RGAPI-xxxx     enregistre ta clé API Riot (stockée en local)
   stat-traque region euw1        change de serveur (euw1, eun1, na1, kr...)
   stat-traque --rejouer f.jsonl  rejoue une session enregistrée (sans LoL)
+  stat-traque collecter 30       collecte 30 min de parties Master+ (stats de runes)
   stat-traque aide               affiche cette aide";
 
 fn main() {
@@ -59,6 +65,11 @@ fn main() {
         ["cle", cle] => return commande_cle(cle),
         ["region", r] => return commande_region(r),
         ["--rejouer", fichier] => return commande_rejouer(fichier),
+        ["collecter", minutes] => {
+            tray::ouvrir_console();
+            journal::initialiser();
+            return collecte::collecter(minutes.parse().unwrap_or(30));
+        }
         ["aide" | "--help" | "-h", ..] => {
             tray::ouvrir_console();
             println!("{AIDE}");

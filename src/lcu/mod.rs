@@ -6,6 +6,7 @@
 //!  2. Avec ce port et ce mot de passe on lui parle en HTTPS (requêtes ponctuelles)
 //!     et en WebSocket (il nous PRÉVIENT de chaque changement, voir `evenements.rs`).
 
+pub mod actions;
 pub mod evenements;
 
 use std::path::{Path, PathBuf};

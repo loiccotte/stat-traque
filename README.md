@@ -9,6 +9,10 @@ Mesures actuelles : exe de 0,9 Mo, ~9 Mo de RAM au repos, 0 requête au client L
 quand rien ne se passe (le client prévient l'app par WebSocket).
 
 ## Fonctions
+- Champ select : analyse des deux compos (style, AP/AD, frontline, contrôle, early/late,
+  alertes, rôle de chaque champion), plan de jeu, picks qui complètent la compo
+- Runes et sorts conseillés avec leurs stats (winrate, nombre de parties), appliqués au verrouillage
+- Rangs solo/flex, maîtrise et meilleur rang vu des 10 joueurs en partie (clé API nécessaire)
 - Icône dans la barre des tâches (pas de fenêtre console)
 - Suivi des phases du client (salon, champ select, partie, fin) par événements
 - Détection du champion survolé / verrouillé et du rôle assigné en champ select
@@ -26,6 +30,7 @@ stat-traque                        # lance l'app (icône près de l'horloge)
 stat-traque --console              # lance l'app avec les messages dans une console
 stat-traque cle RGAPI-xxxxxxxx     # enregistre ta clé API Riot (stockée en local)
 stat-traque region euw1            # change de serveur (euw1, eun1, na1, kr...)
+stat-traque collecter 30           # 30 min de collecte de parties Master+ (stats de runes)
 ```
 Tout est rangé dans `%APPDATA%\stat-traque\` : clé, réglages, cache, journal de la dernière session.
 

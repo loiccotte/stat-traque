@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use crate::champselect::ChampSelect;
 use crate::ddragon::DonneesJeu;
 use crate::gameflow::Phase;
 use crate::live::InstantanePartie;
@@ -14,17 +15,22 @@ use crate::live::InstantanePartie;
 #[derive(Debug)]
 pub enum Evenement {
     /// Le client LoL vient d'être trouvé et le WebSocket est ouvert.
-    ClientConnecte,
+    /// `None` en rejeu (pas de vrai client : on n'applique rien).
+    ClientConnecte(Option<crate::lcu::Lcu>),
     /// Le client LoL a été fermé (ou la connexion perdue).
     ClientPerdu,
     /// Changement de phase : Lobby, ChampSelect, InProgress...
     Phase(Phase),
-    /// Champ select : mon champion (survolé ou verrouillé) et mon rôle assigné.
-    ChampSelect { champion: u16, role: Option<Box<str>> },
+    /// Champ select : mon champion, mon rôle, les deux équipes (voir champselect.rs).
+    ChampSelect(ChampSelect),
     /// Données du patch (noms des champions, runes, sorts) prêtes.
     DonneesPretes(Arc<DonneesJeu>),
     /// Nouvel état de la partie en cours (API du jeu, port 2999).
     Partie(InstantanePartie),
+    /// Mon compte (lu au client à la connexion) : sert à trouver ma partie en cours.
+    Moi { puuid: Box<str> },
+    /// Rangs des joueurs (alliés en champ select non classé, ou les 10 en partie).
+    Rangs(Vec<crate::rangs::InfoJoueur>),
     /// Demande d'arrêt (menu "Quitter" de l'icône).
     #[cfg_attr(not(windows), allow(dead_code))]
     Quitter,

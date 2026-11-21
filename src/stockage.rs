@@ -34,7 +34,14 @@ pub fn chemin_cle() -> PathBuf {
     dossier_app().join("cle.txt")
 }
 
+/// La clé : variable d'environnement `STAT_TRAQUE_CLE` (collecte automatique sur
+/// GitHub, où la clé est un secret), sinon le fichier cle.txt.
 pub fn lire_cle() -> Option<String> {
+    if let Ok(cle) = std::env::var("STAT_TRAQUE_CLE") {
+        if !cle.trim().is_empty() {
+            return Some(cle.trim().to_string());
+        }
+    }
     let cle = std::fs::read_to_string(chemin_cle()).ok()?;
     let cle = cle.trim();
     (!cle.is_empty()).then(|| cle.to_string())

@@ -15,7 +15,7 @@ use crate::live::InstantanePartie;
 /// Transforme le contenu d'un enregistrement en suite d'événements. Fonction pure.
 pub fn evenements(contenu: &str) -> Vec<Evenement> {
     let mut filtre = Filtre::default();
-    let mut sortie = vec![Evenement::ClientConnecte];
+    let mut sortie = vec![Evenement::ClientConnecte(None)];
     for ligne in contenu.lines() {
         let Ok(v) = serde_json::from_str::<Value>(ligne) else { continue };
         let ev = match v["src"].as_str() {
@@ -23,6 +23,9 @@ pub fn evenements(contenu: &str) -> Vec<Evenement> {
             Some("get") => match v["uri"].as_str() {
                 Some("/lol-gameflow/v1/gameflow-phase") => v["data"].as_str().map(|p| Evenement::Phase(Phase::depuis_texte(p))),
                 Some("/lol-champ-select/v1/session") => lire_champ_select(&v["data"]),
+                Some("/lol-summoner/v1/current-summoner") => {
+                    v["data"]["puuid"].as_str().map(|p| Evenement::Moi { puuid: p.into() })
+                }
                 _ => None,
             },
             Some("live") => InstantanePartie::depuis_json(&v["joueurs"], &v["stats"]).map(Evenement::Partie),
@@ -87,7 +90,7 @@ mod tests {
 ligne abîmée
 {"src":"live","joueurs":[{"championName":"Zed","team":"ORDER","scores":{}}],"stats":{"gameMode":"CLASSIC","gameTime":61.0},"t":40}"#;
         let evs = evenements(contenu);
-        let champs = evs.iter().filter(|e| matches!(e, Evenement::ChampSelect { champion: 238, .. })).count();
+        let champs = evs.iter().filter(|e| matches!(e, Evenement::ChampSelect(cs) if cs.champion == 238)).count();
         assert_eq!(champs, 1, "le doublon doit être filtré");
         assert!(evs.iter().any(|e| matches!(e, Evenement::Partie(p) if p.secondes == 61)));
         assert!(matches!(evs.last(), Some(Evenement::ClientPerdu)));

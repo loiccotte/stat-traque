@@ -32,7 +32,6 @@ pub struct Champion {
 pub struct DonneesJeu {
     pub version: String,
     pub champions: HashMap<u16, Champion>,
-    #[allow(dead_code)] // utilisé par la partie joueur (sorts auto)
     pub sorts: HashMap<u16, Box<str>>,
     pub runes: HashMap<u16, Box<str>>,
     /// u32 : certains objets ont un identifiant à 6 chiffres.

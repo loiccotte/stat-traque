@@ -94,7 +94,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                 affichage::modifier(|e| e.client_connecte = false);
                 crate::tray::definir_etat("En attente du client LoL");
             }
-            Evenement::Moi { puuid } => etat.mon_puuid = Some(puuid),
+            Evenement::Moi { puuid } => changer_compte(&mut etat, puuid, &tx),
             Evenement::Phase(p) => changer_phase(&mut etat, p, &tx),
             Evenement::ChampSelect(cs) => match etat.donnees.clone() {
                 Some(d) => champ_select(&mut etat, &d, cs, &tx),
@@ -143,14 +143,7 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         });
     }
     affichage::modifier(|e| e.phase = Some(p));
-    // Rangs des 10 joueurs, une fois par partie.
-    if p.en_partie() && !etat.partie_scoutee {
-        if let (Some(api), Some(puuid)) = (&etat.api, &etat.mon_puuid) {
-            etat.partie_scoutee = true;
-            log!("Recherche des rangs des joueurs...");
-            crate::rangs::scouter_partie(api.clone(), puuid.to_string(), tx.clone());
-        }
-    }
+    scouter_si_besoin(etat, p, tx);
     // Le suivi de partie (port 2999) ne tourne QUE pendant la partie, et seulement
     // si quelqu'un s'en sert : la console, l'enregistreur (overlay plus tard).
     // En rejeu, les instantanés viennent du fichier, pas du jeu.
@@ -162,6 +155,43 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         _ => {}
     }
     etat.phase = p;
+}
+
+/// Rangs des 10 joueurs, une fois par partie (il faut connaître mon compte).
+fn scouter_si_besoin(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
+    if p.en_partie() && !etat.partie_scoutee {
+        if let (Some(api), Some(puuid)) = (&etat.api, &etat.mon_puuid) {
+            etat.partie_scoutee = true;
+            log!("Recherche des rangs des joueurs...");
+            crate::rangs::scouter_partie(api.clone(), puuid.to_string(), tx.clone());
+        }
+    }
+}
+
+/// Multi-comptes : le client annonce son compte à chaque connexion (et dès qu'il
+/// a fini de le charger). Si c'est un AUTRE compte qu'avant (déconnexion puis
+/// connexion d'un ami sur le même PC...), tout ce qui dépend du joueur repart de zéro.
+fn changer_compte(etat: &mut Etat, puuid: Box<str>, tx: &Sender<Evenement>) {
+    if let Some(ancien) = &etat.mon_puuid {
+        if *ancien == puuid {
+            return; // même compte (reconnexion, changement d'icône...) : rien à refaire
+        }
+        // Un compte différent : on oublie ce qui a été fait pour l'ancien.
+        log!("Autre compte connecté au client LoL : on repart de zéro.");
+        etat.cs = SuiviChampSelect::default();
+        etat.cs_en_attente = None;
+        etat.partie_scoutee = false;
+        affichage::modifier(|e| {
+            e.champ_select = None;
+            e.rangs.clear();
+            e.partie = None;
+        });
+    }
+    // Premier compte vu : rien à oublier (le champ select en cours reste valable).
+    etat.mon_puuid = Some(puuid);
+    // Compte annoncé APRÈS le début de la partie : on cherche les rangs maintenant.
+    let phase = etat.phase;
+    scouter_si_besoin(etat, phase, tx);
 }
 
 /// Id Data Dragon ("MonkeyKing") d'un champion.

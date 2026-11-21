@@ -103,17 +103,19 @@ fn main() {
     log!("stat-traque {} — démarrage", env!("CARGO_PKG_VERSION"));
 
     // Un canal = une file de messages. Les threads envoient (`tx`), le cerveau reçoit (`rx`).
-    enregistreur::demarrer(&stockage::Reglages::charger());
+    // Réglages lus UNE fois ici, puis prêtés (`&`) à ceux qui en ont besoin au démarrage.
+    let reglages = stockage::Reglages::charger();
+    enregistreur::demarrer(&reglages);
     let (tx, rx) = mpsc::channel();
     ddragon::charger_en_fond(tx.clone());
     lcu::evenements::lancer(tx.clone());
-    verifier_cle_en_fond();
-    // Lancement avec Windows (registre à jour si l'exe a bougé) et mise à jour auto.
-    let reglages = stockage::Reglages::charger();
+    verifier_cle_en_fond(&reglages);
+    // Lancement avec Windows : registre remis à jour si l'exe a bougé.
     demarrage::synchroniser(&reglages);
-    maj::lancer_en_fond(&reglages);
 
     log!("Prêt en {} ms.", debut.elapsed().as_millis());
+    // Mise à jour auto APRÈS « Prêt » : ce lancement a réussi, l'ancien exe peut être rangé.
+    maj::lancer_en_fond(&reglages);
     if console {
         cerveau::boucle(rx, tx, cerveau::Mode::Console);
     } else {
@@ -186,9 +188,11 @@ fn commande_region(region: &str) {
 }
 
 /// Ménage du cache et vérification de la clé, sans retarder le démarrage.
-fn verifier_cle_en_fond() {
-    std::thread::spawn(|| {
-        let api = riot_api::RiotApi::depuis_reglages(&stockage::Reglages::charger());
+fn verifier_cle_en_fond(reglages: &stockage::Reglages) {
+    // Le thread a besoin de SA copie (il vit plus longtemps que `main` ne prête les réglages).
+    let reglages = reglages.clone();
+    std::thread::spawn(move || {
+        let api = riot_api::RiotApi::depuis_reglages(&reglages);
         let supprimes = api.nettoyer_cache();
         if supprimes > 0 {
             log!("Cache Riot : {supprimes} fichiers périmés supprimés.");

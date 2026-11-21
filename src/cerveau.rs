@@ -52,6 +52,9 @@ struct Etat {
     /// Champ select reçu avant que Data Dragon soit prêt : traité après.
     cs_en_attente: Option<ChampSelect>,
     partie_scoutee: bool,
+    /// Numéro du compte connecté : +1 à chaque changement de compte. Les recherches de
+    /// rangs le reçoivent et le renvoient ; un résultat d'un ancien numéro est ignoré.
+    session_compte: u32,
     /// Existe seulement pendant une partie (le lâcher arrête le thread).
     suivi: Option<SuiviPartie>,
 }
@@ -72,6 +75,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
         cs: SuiviChampSelect::default(),
         cs_en_attente: None,
         partie_scoutee: false,
+        session_compte: 0,
         suivi: None,
     };
     crate::tray::definir_etat("En attente du client LoL");
@@ -110,7 +114,9 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                     champ_select(&mut etat, &d, cs, &tx);
                 }
             }
-            Evenement::Rangs(joueurs) => {
+            // Recherche lancée pour un compte précédent : résultat périmé, ignoré.
+            Evenement::Rangs { session, .. } if session != etat.session_compte => {}
+            Evenement::Rangs { joueurs, .. } => {
                 if let Some(d) = &etat.donnees {
                     afficher_rangs(d, &joueurs);
                 }
@@ -163,7 +169,7 @@ fn scouter_si_besoin(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         if let (Some(api), Some(puuid)) = (&etat.api, &etat.mon_puuid) {
             etat.partie_scoutee = true;
             log!("Recherche des rangs des joueurs...");
-            crate::rangs::scouter_partie(api.clone(), puuid.to_string(), tx.clone());
+            crate::rangs::scouter_partie(api.clone(), puuid.to_string(), etat.session_compte, tx.clone());
         }
     }
 }
@@ -178,6 +184,8 @@ fn changer_compte(etat: &mut Etat, puuid: Box<str>, tx: &Sender<Evenement>) {
         }
         // Un compte différent : on oublie ce qui a été fait pour l'ancien.
         log!("Autre compte connecté au client LoL : on repart de zéro.");
+        // `wrapping_add` : repasse à 0 après u32::MAX au lieu de planter (jamais atteint en pratique).
+        etat.session_compte = etat.session_compte.wrapping_add(1);
         etat.cs = SuiviChampSelect::default();
         etat.cs_en_attente = None;
         etat.partie_scoutee = false;
@@ -235,7 +243,7 @@ fn champ_select(etat: &mut Etat, d: &DonneesJeu, cs: ChampSelect, tx: &Sender<Ev
                 cs.allies.iter().filter_map(|a| a.puuid.as_ref().map(|p| (p.to_string(), a.champion, a.moi))).collect();
             if connus.len() > 1 {
                 etat.cs.rangs_demandes = true;
-                crate::rangs::scouter_allies(api.clone(), connus, tx.clone());
+                crate::rangs::scouter_allies(api.clone(), connus, etat.session_compte, tx.clone());
             }
         }
     }

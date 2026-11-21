@@ -110,24 +110,30 @@ mod tests {
             meilleur: None,
             maitrise: None,
         };
-        let rangs_apres = |second: &str| {
+        // `fin` : événements envoyés après le retour du client avec le compte `second`.
+        let rangs_apres = |second: &str, fin: Vec<Evenement>| {
             let (tx, rx) = std::sync::mpsc::channel();
-            for ev in [
+            let debut = [
                 Evenement::ClientConnecte(None),
                 Evenement::Moi { puuid: "J-aaaa".into() },
-                Evenement::Rangs(vec![joueur.clone()]),
+                Evenement::Rangs { session: 0, joueurs: vec![joueur.clone()] },
                 Evenement::ClientPerdu,
                 Evenement::ClientConnecte(None),
                 Evenement::Moi { puuid: second.into() },
-                Evenement::Quitter,
-            ] {
+            ];
+            for ev in debut.into_iter().chain(fin).chain([Evenement::Quitter]) {
                 tx.send(ev).unwrap();
             }
             crate::cerveau::boucle(rx, tx, crate::cerveau::Mode::Rejeu);
             crate::affichage::lire().rangs.len()
         };
-        assert_eq!(rangs_apres("J-aaaa"), 1, "même compte : on garde");
-        assert_eq!(rangs_apres("J-bbbb"), 0, "autre compte : on efface");
+        assert_eq!(rangs_apres("J-aaaa", vec![]), 1, "même compte : on garde");
+        assert_eq!(rangs_apres("J-bbbb", vec![]), 0, "autre compte : on efface");
+        // Résultat d'une recherche lancée pour l'ANCIEN compte, arrivé trop tard : ignoré.
+        let perime = Evenement::Rangs { session: 0, joueurs: vec![joueur.clone()] };
+        assert_eq!(rangs_apres("J-bbbb", vec![perime]), 0, "résultat périmé ignoré");
+        let frais = Evenement::Rangs { session: 1, joueurs: vec![joueur.clone()] };
+        assert_eq!(rangs_apres("J-bbbb", vec![frais]), 1, "résultat du nouveau compte affiché");
     }
 
     #[test]

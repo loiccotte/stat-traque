@@ -30,7 +30,9 @@ pub enum Evenement {
     /// Mon compte (lu au client à la connexion) : sert à trouver ma partie en cours.
     Moi { puuid: Box<str> },
     /// Rangs des joueurs (alliés en champ select non classé, ou les 10 en partie).
-    Rangs(Vec<crate::rangs::InfoJoueur>),
+    /// `session` : numéro du compte pour lequel la recherche a été lancée (voir
+    /// `cerveau::changer_compte`) ; un résultat arrivé après un changement de compte est ignoré.
+    Rangs { session: u32, joueurs: Vec<crate::rangs::InfoJoueur> },
     /// Demande d'arrêt (menu "Quitter" de l'icône).
     #[cfg_attr(not(windows), allow(dead_code))]
     Quitter,

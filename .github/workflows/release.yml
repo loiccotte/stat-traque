@@ -17,6 +17,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false # le jeton GitHub ne reste pas dans .git/config
       - name: Rust stable
         run: rustup update stable && rustup default stable
       - uses: Swatinem/rust-cache@v2

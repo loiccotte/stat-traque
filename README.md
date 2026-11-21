@@ -56,6 +56,14 @@ Changer de compte dans le client LoL est détecté : ce qui concernait l'ancien 
 Au démarrage, au plus une fois par jour, l'app regarde la dernière release GitHub. Si elle
 est plus récente, `stat-traque.exe` est téléchargé à côté de l'exe actuel et remplace
 celui-ci ; la nouvelle version est active au prochain lancement (`maj=non` pour désactiver).
+Le fichier n'est accepté que s'il vient des releases de ce dépôt et que sa taille et son
+empreinte SHA-256 correspondent à ce qu'annonce GitHub.
+
+Retour arrière : l'ancienne version reste à côté (`stat-traque.exe.ancien`) jusqu'au
+deuxième lancement de la nouvelle. Pour revenir en arrière : quitter stat-traque, supprimer
+`stat-traque.exe`, renommer `stat-traque.exe.ancien` en `stat-traque.exe`, puis mettre
+`maj=non` dans `reglages.txt`. Si `stat-traque.exe` a disparu (coupure pendant la mise à jour),
+renommer de même `stat-traque.exe.ancien` ou `stat-traque.exe.nouveau`.
 
 ## Publier une version
 1. Monter `version` dans `Cargo.toml` (ex : `0.3.0`) et commiter.
@@ -71,7 +79,9 @@ Pour l'activer : ajouter le secret **`RIOT_API_KEY`** dans *Settings > Secrets a
 Actions*. Sans secret, le workflow s'arrête proprement avec un avertissement.
 Une clé de **développement** expire au bout de 24 h et est très limitée en débit :
 demander une clé de **production** sur le portail développeur Riot est recommandé.
-Lancement manuel possible (onglet *Actions* > *stats* > *Run workflow*, durée au choix).
+Lancement manuel possible (onglet *Actions* > *stats* > *Run workflow*, durée au choix, 340 min max).
+Le déclenchement quotidien (cron) ne tourne que depuis la **branche par défaut** du dépôt :
+le workflow doit y être fusionné pour s'exécuter chaque jour.
 
 ### Tester sans effort
 L'app enregistre chaque session (pseudos anonymisés, 5 sessions max) dans

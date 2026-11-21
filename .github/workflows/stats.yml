@@ -8,6 +8,10 @@
 #
 # Prérequis : le secret RIOT_API_KEY (Settings > Secrets and variables > Actions).
 # Une clé de développement expire en 24 h : prendre une clé de production Riot.
+# Le cron ne tourne QUE depuis la branche par défaut du dépôt (règle de GitHub).
+#
+# Sécurité : chaque secret n'est donné qu'à l'étape qui en a besoin (jamais à la
+# compilation, ni au cache, ni au build.rs d'une dépendance).
 name: stats
 on:
   schedule:
@@ -29,14 +33,14 @@ jobs:
     runs-on: ubuntu-latest # le code compile sous Linux : plus rapide et moins cher que Windows
     timeout-minutes: 355 # limite GitHub : 6 h
     env:
-      RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       # L'app range tout dans $APPDATA/stat-traque : on le fait pointer vers le runner.
       APPDATA: ${{ github.workspace }}/appdata
     steps:
       - name: Clé API présente ?
         id: cle
+        env:
+          RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
         run: |
           if [ -z "$RIOT_API_KEY" ]; then
             echo "::warning::Secret RIOT_API_KEY absent : pas de collecte. Ajoute-le dans Settings > Secrets and variables > Actions."
@@ -46,6 +50,8 @@ jobs:
           fi
       - uses: actions/checkout@v4
         if: steps.cle.outputs.ok == 'true'
+        with:
+          persist-credentials: false # le jeton GitHub ne reste pas dans .git/config
       - uses: Swatinem/rust-cache@v2
         if: steps.cle.outputs.ok == 'true'
       - name: Compilation
@@ -53,6 +59,8 @@ jobs:
         run: cargo build --release
       - name: Reprise des comptes déjà publiés
         if: steps.cle.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           dossier="$APPDATA/stat-traque/cache/stats"
           mkdir -p "$dossier"
@@ -70,9 +78,18 @@ jobs:
         env:
           STAT_TRAQUE_CLE: ${{ secrets.RIOT_API_KEY }}
           MINUTES: ${{ github.event.inputs.minutes || '300' }}
-        run: ./target/release/stat-traque collecter "$MINUTES"
+        run: |
+          # Entrée manuelle bornée : un nombre entre 1 et 340 (le job est coupé à 6 h).
+          case "$MINUTES" in
+            ''|*[!0-9]*) echo "::warning::Durée '$MINUTES' invalide : 300 min."; MINUTES=300 ;;
+          esac
+          if [ "$MINUTES" -gt 340 ]; then MINUTES=340; fi
+          if [ "$MINUTES" -lt 1 ]; then MINUTES=1; fi
+          ./target/release/stat-traque collecter "$MINUTES"
       - name: Publication
         if: steps.cle.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           dossier="$APPDATA/stat-traque/cache/stats"
           shopt -s nullglob

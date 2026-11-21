@@ -138,6 +138,8 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                 affichage::modifier(|e| e.partie = Some(p));
             }
             Evenement::Historique(maj) => crate::historique::publier(*maj, etat.donnees.as_deref()),
+            Evenement::DemandeFiche { puuid } => demander_fiche(&etat, &puuid, &tx),
+            Evenement::Fiche(f) => crate::fiche::publier(*f, etat.donnees.as_deref()),
             Evenement::Quitter => break,
         }
     }
@@ -182,6 +184,24 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     etat.phase = p;
 }
 
+/// Fiche joueur à la demande (F44). Conformité Riot : seulement moi, ou un joueur
+/// de ma partie en cours connu par spectator-v5 (jamais un pseudo caché de champ select).
+fn demander_fiche(etat: &Etat, puuid: &str, tx: &Sender<Evenement>) {
+    let Some(api) = &etat.api else {
+        log!("Fiche : pas de clé API.");
+        return;
+    };
+    let patch = crate::fiche::patch_de(etat.donnees.as_deref());
+    if etat.mon_puuid.as_deref() == Some(puuid) {
+        crate::fiche::lancer(api.clone(), puuid.to_string(), "Moi".into(), true, patch, tx.clone());
+    } else if let Some(nom) = crate::fiche::nom_autorise(puuid) {
+        log!("Fiche de {nom} demandée (11 requêtes au plus)...");
+        crate::fiche::lancer(api.clone(), puuid.to_string(), nom, false, patch, tx.clone());
+    } else {
+        log!("Fiche refusée : joueur inconnu (seulement les joueurs de ta partie en cours).");
+    }
+}
+
 /// Rangs des 10 joueurs, une fois par partie (il faut connaître mon compte).
 fn scouter_si_besoin(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     if p.en_partie() && !etat.partie_scoutee {
@@ -217,7 +237,9 @@ fn changer_compte(etat: &mut Etat, puuid: Box<str>, summoner_id: Option<u64>, tx
             e.champ_select = None;
             e.rangs.clear();
             e.partie = None;
+            e.fiche = None;
         });
+
     }
     // Premier compte vu : rien à oublier (le champ select en cours reste valable).
     // Nouveau compte (ou premier) : synchro de son historique en arrière-plan.

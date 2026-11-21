@@ -2,8 +2,12 @@
 //!
 //! Base locale (dans `%APPDATA%\stat-traque\historique\`), deux petits fichiers texte
 //! par compte (TSV = colonnes séparées par des tabulations, lisible dans un tableur) :
-//!   parties-<puuid>.tsv  une ligne par partie (résumé de ~100 octets, PAS le JSON
-//!                        match-v5 complet qui pèse 30 à 60 Ko)
+//!   parties-<puuid>.tsv  une ligne par partie (résumé de ~200 octets, PAS le JSON
+//!                        match-v5 complet qui pèse 30 à 60 Ko). Format v2 : les
+//!                        métriques détaillées de la fiche joueur (metriques.rs) en
+//!                        fin de ligne ; une ligne v1 (sans elles) reste lisible.
+//!   Rattrapage : une partie v1 parmi les 20 plus récentes de la Faille est
+//!   re-téléchargée UNE fois pour ses métriques (≤ 20 requêtes, une seule fois).
 //!   lp-<puuid>.tsv       une ligne à chaque fois que mon rang solo/flex a changé
 //!
 //! Synchronisation en arrière-plan (thread à part, jamais sur le cerveau) :
@@ -37,6 +41,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::evenement::Evenement;
+use crate::metriques::Metriques;
 use crate::rangs::Rang;
 use crate::riot_api::{Compteurs, ErreurApi, RiotApi};
 use crate::{affichage, log};
@@ -52,7 +57,11 @@ const PARTIES_AFFICHEES: usize = 20;
 const MIN_PARTIES_MOYENNE: u32 = 3;
 /// Points de LP gardés pour le graphique, par file.
 const POINTS_PAR_FILE: usize = 30;
-const ENTETE_PARTIES: &str = "#stat-traque historique v1";
+/// v2 : métriques détaillées en fin de ligne (une ligne v1 reste lisible).
+const ENTETE_PARTIES: &str = "#stat-traque historique v2";
+/// Parties anciennes (sans métriques) re-téléchargées au plus par synchro, pour que
+/// la fiche joueur ait de quoi calculer le radar sans attendre 20 nouvelles parties.
+const RATTRAPAGE_MAX: usize = 20;
 const ENTETE_LP: &str = "#stat-traque lp v1";
 
 fn maintenant() -> u64 {
@@ -144,14 +153,23 @@ pub struct ResumePartie {
     pub patch: Box<str>,
     /// LP gagnés (+) ou perdus (-) sur cette partie, si on a pu le calculer.
     pub lp: Option<i32>,
+    /// Métriques détaillées (challenges match-v5, voir metriques.rs). None : ligne
+    /// d'un ancien fichier (v1), pas encore rattrapée par la synchro.
+    pub metriques: Option<Metriques>,
 }
 
 impl ResumePartie {
     /// Résume une partie match-v5 du point de vue du joueur `puuid`.
     /// None si le joueur n'y est pas ou si le JSON est incomplet.
     pub fn depuis_match(partie: &Value, puuid: &str) -> Option<Self> {
+        let moi = partie["info"]["participants"].as_array()?.iter().find(|p| p["puuid"] == puuid)?;
+        Self::depuis_participant(partie, moi)
+    }
+
+    /// Résume une partie du point de vue d'un participant (`moi` = un élément de
+    /// `info.participants`). Sert aussi à la collecte des références (10 par partie).
+    pub fn depuis_participant(partie: &Value, moi: &Value) -> Option<Self> {
         let info = &partie["info"];
-        let moi = info["participants"].as_array()?.iter().find(|p| p["puuid"] == puuid)?;
         // Petites fonctions locales (« closures ») pour lire un nombre sans répéter le code.
         let n = |k: &str| moi[k].as_u64().unwrap_or(0);
         let n16 = |k: &str| n(k).min(u16::MAX as u64) as u16;
@@ -176,6 +194,7 @@ impl ResumePartie {
             or: n32("goldEarned"),
             patch: crate::stats::patch_court(info["gameVersion"].as_str().unwrap_or("")).into(),
             lp: None,
+            metriques: Some(Metriques::depuis_participant(moi)),
         })
     }
 
@@ -196,12 +215,15 @@ impl ResumePartie {
         (self.kills + self.assists) as f32 / self.morts.max(1) as f32
     }
 
-    /// Une ligne du fichier TSV.
+    /// Une ligne du fichier TSV. Format v2 : les 16 colonnes de la v1, puis (si on
+    /// les a) les `metriques::NB_COLONNES` colonnes des métriques. Un ancien
+    /// stat-traque (v1) lit les 16 premières et ignore le reste.
     fn vers_ligne(&self) -> String {
         let resultat = if self.remake { "R" } else if self.victoire { "V" } else { "D" };
         let lp = self.lp.map_or("-".to_string(), |l| l.to_string());
+        let metriques = self.metriques.map(|m| format!("\t{}", m.vers_colonnes())).unwrap_or_default();
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{resultat}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{lp}\n",
+            "{}\t{}\t{}\t{}\t{}\t{resultat}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{lp}{metriques}\n",
             self.id,
             self.date,
             self.file,
@@ -243,6 +265,8 @@ impl ResumePartie {
             or: c[13].parse().ok()?,
             patch: c[14].into(),
             lp: c[15].trim().parse().ok(),
+            // Colonnes 16 et suivantes : métriques (v2). Absentes en v1.
+            metriques: c.get(16..).and_then(Metriques::depuis_colonnes),
         })
     }
 }
@@ -795,12 +819,54 @@ pub fn synchroniser(
             }
         }
     }
+    // Rattrapage des métriques des parties d'avant la v2 (Faille seulement, les plus
+    // récentes d'abord, `RATTRAPAGE_MAX` au plus) : 1 requête par partie.
+    if erreur.is_none() {
+        erreur = rattraper_metriques(source, &mut h, dossier, puuid, pause, !nouvelles.is_empty()).err();
+    }
     // Le rang APRÈS les parties : les LP de la dernière partie s'inscrivent dessus.
     if erreur.is_none() && (toujours_le_rang || !nouvelles.is_empty()) {
         erreur = noter_rangs(source, &mut h, puuid, maintenant).err();
     }
     let _ = h.sauver(dossier, puuid);
     ResultatSynchro { historique: h, nouvelles, erreur }
+}
+
+/// Re-télécharge les parties sans métriques (voir `RATTRAPAGE_MAX`). Une partie
+/// effacée chez Riot (404) est marquée « absentes » : on ne la redemandera plus.
+fn rattraper_metriques(
+    source: &impl SourceRiot,
+    h: &mut Historique,
+    dossier: &Path,
+    puuid: &str,
+    pause: Duration,
+    deja_telecharge: bool,
+) -> Result<(), ErreurApi> {
+    let ids: Vec<Box<str>> = h
+        .parties
+        .iter()
+        // Seulement parmi les `RATTRAPAGE_MAX` parties de Faille les plus récentes : ce
+        // sont celles du radar ; remonter plus loin coûterait des requêtes pour rien.
+        .filter(|p| p.famille() == Famille::Faille && !p.remake)
+        .take(RATTRAPAGE_MAX)
+        .filter(|p| p.metriques.is_none())
+        .map(|p| p.id.clone())
+        .collect();
+    for (i, id) in ids.iter().enumerate() {
+        if i > 0 || deja_telecharge {
+            std::thread::sleep(pause);
+        }
+        let metriques = match source.partie(id) {
+            Ok(json) => ResumePartie::depuis_match(&json, puuid).and_then(|r| r.metriques),
+            Err(ErreurApi::Introuvable) => None,
+            Err(e) => return Err(e),
+        };
+        if let Some(p) = h.parties.iter_mut().find(|p| p.id == *id) {
+            p.metriques = Some(metriques.unwrap_or_else(Metriques::absentes));
+        }
+        let _ = h.sauver(dossier, puuid);
+    }
+    Ok(())
 }
 
 /// Demande mon rang (1 requête) et le note dans la base (sans la sauver).
@@ -943,7 +1009,13 @@ pub fn publier(maj: MajHistorique, donnees: Option<&crate::ddragon::DonneesJeu>)
             log!("{ligne}");
         }
     }
+    // Texte prêt à coller sur Discord (F24), pour le bouton « Copier » de l'interface.
+    let partage = maj.recap.as_ref().map(|r| crate::fiche::recap_discord(r, &nom(r.partie.champion), None));
     affichage::modifier(move |e| {
+        if partage.is_some() {
+            e.recap_partage = partage;
+        }
+
         e.historique = maj.dernieres;
         e.stats_perso = Some(maj.stats);
         e.progression_lp = Some(maj.progression);
@@ -1321,7 +1393,48 @@ mod tests {
     }
 
     #[test]
+    fn fichier_v1_relu_puis_metriques_rattrapees() {
+        let dossier = dossier_test("v2");
+        // Fichier écrit par l'ancienne version (v1, 16 colonnes, sans métriques).
+        let v1 = "#stat-traque historique v1\n\
+            EUW1_0\t500\t420\t103\tmiddle\tD\t1\t5\t3\t150\t1800\t9000\t20\t9000\t16.23\t-\n\
+            EUW1_1\t1000\t420\t103\tmiddle\tV\t5\t2\t3\t210\t1800\t25000\t30\t12000\t16.23\t18\n";
+        std::fs::write(dossier.join(format!("parties-{MOI}.tsv")), v1).unwrap();
+        let h = Historique::charger(&dossier, MOI);
+        assert_eq!(h.parties.len(), 2);
+        assert!(h.parties.iter().all(|p| p.metriques.is_none()));
+        assert_eq!(h.parties[0].lp, Some(18));
+        // EUW1_0 n'existe plus chez Riot (404) ; EUW1_1 est re-téléchargée pour ses métriques.
+        let source = FausseSource {
+            parties: vec![match_json("EUW1_1", 1_000, 420, 103, true, (5, 2, 3))],
+            rangs: rangs_json(50, 10, 10),
+            effacees: vec!["EUW1_0"],
+            ..Default::default()
+        };
+        let r = synchroniser(&source, &dossier, MOI, Duration::ZERO, 10_000, false);
+        assert!(r.erreur.is_none());
+        assert!(r.nouvelles.is_empty());
+        assert_eq!(*source.appels.borrow(), 3); // ids + 2 parties à rattraper
+        let h = Historique::charger(&dossier, MOI);
+        let m1 = h.parties[0].metriques.unwrap();
+        assert_eq!(m1.source, crate::metriques::Source::SansChallenges);
+        assert_eq!(h.parties[1].metriques.unwrap().source, crate::metriques::Source::Absentes);
+        // Rien à rattraper la fois suivante (la 404 n'est pas redemandée).
+        *source.appels.borrow_mut() = 0;
+        synchroniser(&source, &dossier, MOI, Duration::ZERO, 20_000, false);
+        assert_eq!(*source.appels.borrow(), 1);
+        // Le fichier est passé en v2, et ses 16 premières colonnes restent celles de la v1.
+        let texte = std::fs::read_to_string(dossier.join(format!("parties-{MOI}.tsv"))).unwrap();
+        assert!(texte.starts_with("#stat-traque historique v2\n"));
+        let ligne = texte.lines().find(|l| l.starts_with("EUW1_1")).unwrap();
+        assert_eq!(ligne.split('\t').count(), 16 + crate::metriques::NB_COLONNES);
+        assert!(ligne.starts_with("EUW1_1\t1000\t420\t103\tmiddle\tV\t5\t2\t3\t210\t1800\t25000\t30\t12000\t16.23\t18\t"));
+        let _ = std::fs::remove_dir_all(dossier);
+    }
+
+    #[test]
     fn coupure_reseau_puis_reprise_sans_doublon_et_partie_404() {
+
         let dossier = dossier_test("reprise");
         let source = FausseSource {
             parties: (1..=4u64).map(|i| match_json(&format!("EUW1_{i}"), i * 1_000, 420, 103, true, (1, 1, 1))).collect(),

@@ -212,6 +212,14 @@ impl RiotApi {
         self.requete(&self.plateforme, &chemin, Duree::Pendant(Duration::from_secs(3600)))
     }
 
+    /// Une page (205 joueurs au plus) d'un palier / d'une division en solo/duo, pour
+    /// échantillonner les paliers sous Master (références de la fiche joueur).
+    /// `palier` = "GOLD"..., `division` = "I" à "IV", `page` à partir de 1. Cache 1 h.
+    pub fn entrees_ligue(&self, palier: &str, division: &str, page: u32) -> Result<Value, ErreurApi> {
+        let chemin = format!("/lol/league/v4/entries/RANKED_SOLO_5x5/{palier}/{division}?page={}", page.max(1));
+        self.requete(&self.plateforme, &chemin, Duree::Pendant(Duration::from_secs(3600)))
+    }
+
     /// Dernières parties CLASSÉES solo/duo (file 420) d'un joueur.
     pub fn ids_parties_classees(&self, puuid: &str, nombre: u8) -> Result<Value, ErreurApi> {
         let chemin = format!("/lol/match/v5/matches/by-puuid/{puuid}/ids?queue=420&type=ranked&count={nombre}");

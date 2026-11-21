@@ -40,15 +40,16 @@ Priorité : P0 indispensable · P1 important · P2 bonus
 | F21 | Historique des parties avec filtres | ✅ | P0 | base locale TSV (~100 octets / partie), hors ligne ; 100 dernières parties au 1er lancement (pas de pagination) ; filtres = interface | T22 |
 | F22 | Stats perso par champion / rôle / patch | ✅ | P1 | — | T21 |
 | F23 | Suivi des LP et de la progression | ✅ | P1 | LP par partie, changements de division gérés | T21 |
-| F24 | Récap partageable (texte prêt à coller sur Discord) pour les amis | 🔜 | P1 | — | T30 |
+| F24 | Récap partageable (texte prêt à coller sur Discord) pour les amis | ✅ | P1 | markdown court (résultat, KDA, écarts à ta moyenne, radar de la partie en ▰▱) ; `stat-traque partager`, 0 requête ; bouton « Copier » = interface | T30 |
 
 ## 3 bis. Fiche joueur
 | ID | Feature | Statut | Prio | Mieux que Blitz | Tâche |
 |---|---|---|---|---|---|
-| F41 | Radar de jeu : combat, farm, vision, objectifs, lane, survie, agressivité, noté par rapport aux joueurs du même rang et du même rôle | 🔜 | P1 | comparé à TON niveau, pas aux pros | T29 |
-| F42 | MMR estimé (gains/pertes de LP, winrate, parties) — affiché comme une estimation | 🔜 | P1 | — | T29 |
-| F43 | Spécificités : champion pool, rôles, style (farmer, roamer, teamfighter, early...), forme récente | 🔜 | P1 | — | T29 |
-| F44 | Fiche des autres joueurs de la partie, à la demande (coût en requêtes borné, cache) | 🔜 | P1 | — | T29 |
+| F41 | Radar de jeu : combat, farm, vision, objectifs, lane, survie, agressivité, noté par rapport aux joueurs du même rang et du même rôle | ✅ | P1 | comparé à TON palier et TON rôle (références collectées Fer → Master+, repli documenté « référence approximative ») | T29 |
+| F42 | MMR estimé (gains/pertes de LP, winrate, parties) — affiché comme une estimation | ✅ | P1 | rang équivalent (« ~Émeraude II ») + écart en LP + niveau de confiance | T29 |
+| F43 | Spécificités : champion pool, rôles, style (farmer, roamer, teamfighter, early...), forme récente | ✅ | P1 | étiquettes déduites des métriques challenges match-v5 vs référence | T29 |
+| F44 | Fiche des autres joueurs de la partie, à la demande (coût en requêtes borné, cache) | ✅ | P1 | ≤ 11 requêtes (rang + ids + 9 parties en cache permanent), une fiche à la fois, seulement les joueurs connus par spectator ou un Riot ID tapé ; `stat-traque fiche [Pseudo#TAG]` | T29 |
+
 
 ## 4. Savoir des OTP (fiches matchup)
 L'idée : les one-tricks (OTP) tiennent des spreadsheets ou des sites (ex : fiches Zed de

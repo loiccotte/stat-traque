@@ -24,6 +24,8 @@
 //!   M<TAB>champion<TAB>rôle<TAB>adversaire<TAB>parties<TAB>victoires   (nouveau : matchup de lane)
 //!   O<TAB>champion<TAB>rôle<TAB>objet<TAB>L|B<TAB>parties<TAB>victoires (nouveau : légendaire ou bottes)
 //!   B<TAB>champion<TAB>parties où il a été banni                   (nouveau)
+//!   R<TAB>palier<TAB>rôle<TAB>mesure<TAB>parties<TAB>somme<TAB>somme des carrés
+//!     (références de la fiche joueur, par palier et par rôle : voir metriques.rs)
 
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -32,6 +34,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::ddragon::GenreObjet;
+use crate::metriques::References;
 
 /// Rôles, au format du client LoL (`assignedPosition`).
 pub const ROLES: [&str; 5] = ["top", "jungle", "middle", "bottom", "utility"];
@@ -120,6 +123,9 @@ pub struct Stats {
     bans: HashMap<u16, u32>,
     /// true si le texte lu avait la ligne `#parties` (format actuel).
     format_actuel: bool,
+    /// Références de la fiche joueur (lignes `R`) : moyenne / écart-type des mesures
+    /// par (palier, rôle). Alimentées par TOUS les paliers (pas seulement Master+).
+    pub references: References,
 }
 
 /// Lit la page de runes d'un participant match-v5.
@@ -368,6 +374,28 @@ impl Stats {
         Ajout::Comptee
     }
 
+    /// Ajoute les 10 participants d'une partie aux RÉFÉRENCES du palier `palier`
+    /// (indice de `metriques::PALIERS_REFERENCE`), sans toucher aux runes, objets...
+    /// Approximation : match-v5 ne donne pas le rang de chaque joueur ; on prend celui
+    /// du joueur échantillonné (le matchmaking réunit des joueurs de niveau proche).
+    pub fn ajouter_references(&mut self, partie: &Value, palier: usize) -> Ajout {
+        let info = &partie["info"];
+        if !info["gameVersion"].as_str().unwrap_or("").starts_with(&format!("{}.", self.patch)) {
+            return Ajout::AutrePatch;
+        }
+        let Some(participants) = info["participants"].as_array() else { return Ajout::Ignoree };
+        let remake = participants.iter().any(|p| p["gameEndedInEarlySurrender"] == true);
+        if remake || info["gameDuration"].as_u64().is_some_and(|s| s < DUREE_MIN_PARTIE) {
+            return Ajout::Ignoree;
+        }
+        for p in participants {
+            if let Some(r) = crate::historique::ResumePartie::depuis_participant(partie, p) {
+                self.references.ajouter(palier, &r);
+            }
+        }
+        Ajout::Comptee
+    }
+
     /// Texte du fichier. `min_parties` : on n'écrit pas les combinaisons trop rares
     /// (les totaux `C` et les bans `B` sont toujours écrits).
     pub fn vers_texte(&self, min_parties: u32) -> String {
@@ -417,6 +445,7 @@ impl Stats {
         let mut bans: Vec<(&u16, &u32)> = self.bans.iter().collect();
         bans.sort();
         lignes.extend(bans.into_iter().map(|(c, n)| format!("B\t{c}\t{n}")));
+        lignes.extend(self.references.vers_lignes(min_parties));
         lignes.join("\n")
     }
 
@@ -431,6 +460,13 @@ impl Stats {
             "#parties" => {
                 self.parties = c.get(1).and_then(|x| x.parse().ok()).unwrap_or(0);
                 self.format_actuel = true;
+                return;
+            }
+            // Références : la 2e colonne est un palier, pas un champion.
+            "R" => {
+                if garder("R", 0) {
+                    self.references.lire_ligne(&c);
+                }
                 return;
             }
             _ => {}
@@ -804,7 +840,8 @@ pub fn patch_court(version: &str) -> String {
 /// la RAM utilisée ne dépend pas de la taille du fichier.
 /// On lit des OCTETS puis on vérifie l'UTF-8 ligne par ligne : un octet abîmé ne
 /// fait sauter que sa ligne, pas tout le fichier.
-fn lire_lignes(chemin: &Path, mut f: impl FnMut(&str)) -> Option<()> {
+pub(crate) fn lire_lignes(chemin: &Path, mut f: impl FnMut(&str)) -> Option<()> {
+
     let mut lecteur = std::io::BufReader::new(std::fs::File::open(chemin).ok()?);
     let mut octets: Vec<u8> = Vec::new();
     loop {
@@ -1197,7 +1234,44 @@ mod tests {
     }
 
     #[test]
+    fn references_par_palier_et_role() {
+        let mut s = Stats::nouveau("16.23");
+        let mut p = partie_mid(true, &[]);
+        p["info"]["gameDuration"] = json!(1800);
+        p["metadata"] = json!({"matchId": "EUW1_1"});
+        p["info"]["gameStartTimestamp"] = json!(1_000_000);
+        for (i, j) in p["info"]["participants"].as_array_mut().unwrap().iter_mut().enumerate() {
+            j["totalMinionsKilled"] = json!(180 + 30 * i as u64); // 6, 7, 8, 9 CS/min
+            j["challenges"] = json!({"killParticipation": 0.5});
+        }
+        // Une partie en Or (3) : ses 4 participants vont dans les références, pas dans les runes.
+        assert_eq!(s.ajouter_references(&p, 3), Ajout::Comptee);
+        assert_eq!(s.nombre_parties_vues(), 0);
+        assert!(s.recommander(238, Some("middle")).is_none());
+        let mid = s.references.somme(3, "middle", crate::metriques::Mesure::CsMin).unwrap();
+        assert_eq!(mid.parties, 2); // Zed et Ahri
+        assert!((mid.moyenne() - 7.0).abs() < 1e-4, "{}", mid.moyenne());
+        assert_eq!(s.references.somme(3, "middle", crate::metriques::Mesure::Kp).unwrap().moyenne(), 50.0);
+        // Autre patch : refusée.
+        let mut vieille = p.clone();
+        vieille["info"]["gameVersion"] = json!("16.22.1");
+        assert_eq!(s.ajouter_references(&vieille, 3), Ajout::AutrePatch);
+        // Aller-retour : lignes R écrites et relues ; la lecture filtrée du champ select
+        // et la tier list ne les gardent pas en RAM.
+        let texte = s.vers_texte(1);
+        assert!(texte.contains("\nR\tGOLD\tmiddle\tcs_min\t2\t"), "{texte}");
+        assert_eq!(Stats::depuis_texte(&texte, None).references, s.references);
+        let chemin = std::env::temp_dir().join(format!("stat-traque-test-refs-{}.tsv", std::process::id()));
+        std::fs::write(&chemin, &texte).unwrap();
+        assert!(Stats::charger_filtre(&chemin, &[238]).unwrap().references.est_vide());
+        assert_eq!(crate::metriques::charger_references(&chemin).unwrap(), s.references);
+        assert_eq!(Stats::charger_tout(&chemin).unwrap().references, s.references);
+        let _ = std::fs::remove_file(&chemin);
+    }
+
+    #[test]
     fn roles_tapes_par_l_utilisateur() {
+
         assert_eq!(role_depuis_texte("MID"), Some("middle"));
         assert_eq!(role_depuis_texte("adc"), Some("bottom"));
         assert_eq!(role_depuis_texte("support"), Some("utility"));

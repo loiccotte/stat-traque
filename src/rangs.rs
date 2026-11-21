@@ -406,8 +406,11 @@ pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, session: u32, tx: Se
                 Some((puuid, nom, p["championId"].as_u64().unwrap_or(0) as u16, p["teamId"] == 100, moi))
             })
             .collect();
+        // Ces joueurs sont connus officiellement (spectator) : leur fiche peut être demandée.
+        crate::fiche::autoriser(joueurs.iter().map(|(p, n, c, _, _)| (p.clone(), n.clone(), *c)).collect());
         let file = file_spectator(&partie);
         FILE_PARTIE.store(file.unwrap_or(0), Ordering::SeqCst);
+
         let resultats = infos_paralleles(&api, &joueurs, true, file);
         // Groupes (duos / premades) à partir des parties récentes en commun.
         let entrees: Vec<(bool, &[String])> = resultats.iter().map(|(j, ids)| (j.bleu, ids.as_slice())).collect();

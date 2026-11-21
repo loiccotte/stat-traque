@@ -16,19 +16,22 @@ pub enum Onglet {
     ChampSelect,
     Partie,
     Historique,
+    TierList,
     Journal,
     Reglages,
 }
 
 impl Onglet {
     /// Ordre d'affichage dans la barre d'onglets.
-    pub const TOUS: [Onglet; 5] = [Onglet::ChampSelect, Onglet::Partie, Onglet::Historique, Onglet::Journal, Onglet::Reglages];
+    pub const TOUS: [Onglet; 6] =
+        [Onglet::ChampSelect, Onglet::Partie, Onglet::Historique, Onglet::TierList, Onglet::Journal, Onglet::Reglages];
 
     pub fn libelle(self) -> &'static str {
         match self {
             Onglet::ChampSelect => "Champ select",
             Onglet::Partie => "Partie",
             Onglet::Historique => "Historique",
+            Onglet::TierList => "Tier list",
             Onglet::Journal => "Journal",
             Onglet::Reglages => "Réglages",
         }
@@ -37,8 +40,12 @@ impl Onglet {
     /// Faut-il montrer l'onglet ? Les onglets de base sont toujours là (avec un
     /// message clair s'ils sont vides) ; un futur onglet optionnel renverra par
     /// exemple `!etat.matchups.is_empty()`.
-    pub fn visible(self, _etat: &EtatAffichage) -> bool {
-        true
+    pub fn visible(self, etat: &EtatAffichage) -> bool {
+        match self {
+            // Pas de stats du patch = pas de tier list : on cache l'onglet.
+            Onglet::TierList => etat.tier_list.is_some(),
+            _ => true,
+        }
     }
 }
 
@@ -62,6 +69,8 @@ mod tests {
         assert_eq!(onglet_conseille(Some(Phase::InProgress)), Some(Onglet::Partie));
         assert_eq!(onglet_conseille(Some(Phase::Lobby)), None);
         assert_eq!(onglet_conseille(None), None);
-        assert!(Onglet::TOUS.iter().all(|o| !o.libelle().is_empty() && o.visible(&EtatAffichage::default())));
+        assert!(Onglet::TOUS.iter().all(|o| !o.libelle().is_empty()));
+        assert!(!Onglet::TierList.visible(&EtatAffichage::default()));
+        assert!(Onglet::Historique.visible(&EtatAffichage::default()));
     }
 }

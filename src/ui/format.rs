@@ -199,8 +199,47 @@ pub fn position_overlay(texte: Option<&str>) -> [f32; 2] {
     }
 }
 
+/// Date relative : « il y a 5 min », « il y a 3 h », « il y a 2 j ».
+pub fn il_y_a(maintenant: u64, date: u64) -> String {
+    let s = maintenant.saturating_sub(date);
+    match s {
+        0..=59 => "à l'instant".into(),
+        60..=3599 => format!("il y a {} min", s / 60),
+        3600..=86_399 => format!("il y a {} h", s / 3600),
+        _ => format!("il y a {} j", s / 86_400),
+    }
+}
+
+/// Secondes Unix actuelles.
+pub fn maintenant() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Variation de LP avec son signe : `+21 LP`, `-18 LP`.
+pub fn variation_lp(lp: i32) -> String {
+    format!("{lp:+} LP")
+}
+
+/// Écart à la moyenne : `+13 %` (None si pas de moyenne).
+pub fn ecart(ecart_pct: Option<f32>) -> String {
+    ecart_pct.map_or_else(String::new, |e| format!("{e:+.0}\u{a0}%"))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dates_et_ecarts() {
+        assert_eq!(il_y_a(1000, 990), "à l'instant");
+        assert_eq!(il_y_a(10_000, 10_000 - 300), "il y a 5 min");
+        assert_eq!(il_y_a(100_000, 100_000 - 3 * 3600), "il y a 3 h");
+        assert_eq!(il_y_a(1_000_000, 1_000_000 - 2 * 86_400), "il y a 2 j");
+        assert_eq!(il_y_a(0, 10), "à l'instant");
+        assert_eq!(variation_lp(21), "+21 LP");
+        assert_eq!(variation_lp(-18), "-18 LP");
+        assert_eq!(ecart(Some(13.2)), "+13\u{a0}%");
+        assert_eq!(ecart(None), "");
+    }
+
     use super::*;
 
     fn rang(palier: &str, division: &str, lp: u16, v: u16, d: u16) -> Rang {
@@ -252,6 +291,7 @@ mod tests {
             flex: None,
             meilleur: Some(rang("GOLD", "II", 10, 1, 1)),
             maitrise: None,
+            badges: Vec::new(),
         };
         assert_eq!(meilleur_vu(&j), None);
         j.meilleur = Some(rang("PLATINUM", "IV", 0, 1, 1));

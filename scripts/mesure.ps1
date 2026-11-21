@@ -6,7 +6,7 @@ param(
     [int]$Secondes = 10
 )
 $ErrorActionPreference = "Stop"
-$budgets = @{ TailleMo = 8; RamReposMo = 15; CpuReposPct = 0.5; DemarrageMs = 300 }
+$budgets = @{ TailleMo = 20; RamReposMo = 15; CpuReposPct = 0.5; DemarrageMs = 300 }
 $horsBudget = @()
 
 # 1) Taille de l'exe

@@ -38,6 +38,15 @@ struct SuiviChampSelect {
     runes_pour: u16,
     compo_affichee: (Vec<u16>, Vec<u16>),
     rangs_demandes: bool,
+    /// Matchup / contre-picks déjà calculés pour (mon champion, ennemis, verrouillé).
+    lane_pour: (u16, Vec<u16>, bool),
+    /// Meilleurs / pires matchups déjà annoncés pour ce champion.
+    matchups_pour: u16,
+    /// Stats lues pour ces champions (mon champion + ennemis visibles) : relues
+    /// seulement quand cette liste change. Quelques dizaines de Ko au plus.
+    stats_lues: Option<(Vec<u16>, stats::Stats)>,
+    /// (mon champion, adversaire) du dernier matchup écrit au journal.
+    matchup_annonce: (u16, u16),
 }
 
 struct Etat {
@@ -51,8 +60,13 @@ struct Etat {
     /// Champ select reçu avant que Data Dragon soit prêt : traité après.
     cs_en_attente: Option<ChampSelect>,
     partie_scoutee: bool,
+    /// Numéro du compte connecté : +1 à chaque changement de compte. Les recherches de
+    /// rangs le reçoivent et le renvoient ; un résultat d'un ancien numéro est ignoré.
+    session_compte: u32,
     /// Existe seulement pendant une partie (le lâcher arrête le thread).
     suivi: Option<SuiviPartie>,
+    /// Mon summonerId (lu au client) : sert aux item sets.
+    mon_summoner_id: Option<u64>,
 }
 
 pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
@@ -70,7 +84,9 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
         cs: SuiviChampSelect::default(),
         cs_en_attente: None,
         partie_scoutee: false,
+        session_compte: 0,
         suivi: None,
+        mon_summoner_id: None,
     };
     crate::tray::definir_etat("En attente du client LoL");
     let cle = etat.api.is_some();
@@ -92,17 +108,14 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                 affichage::modifier(|e| e.client_connecte = false);
                 crate::tray::definir_etat("En attente du client LoL");
             }
-            Evenement::Moi { puuid } => etat.mon_puuid = Some(puuid),
+            Evenement::Moi { puuid, summoner_id } => changer_compte(&mut etat, puuid, summoner_id, &tx),
             Evenement::Phase(p) => changer_phase(&mut etat, p, &tx),
             Evenement::ChampSelect(cs) => match etat.donnees.clone() {
                 Some(d) => champ_select(&mut etat, &d, cs, &tx),
                 None => etat.cs_en_attente = Some(cs),
             },
             Evenement::DonneesPretes(d) => {
-                let patch = stats::patch_court(&d.version);
-                if stats::trouver_fichier(&patch).is_none() {
-                    std::thread::spawn(move || stats::mettre_a_jour(&patch));
-                }
+                preparer_stats_en_fond(&d);
                 etat.donnees = Some(d.clone());
                 let partage = d.clone();
                 affichage::modifier(|e| e.donnees = Some(partage)); // noms pour l'interface
@@ -110,7 +123,9 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                     champ_select(&mut etat, &d, cs, &tx);
                 }
             }
-            Evenement::Rangs(joueurs) => {
+            // Recherche lancée pour un compte précédent : résultat périmé, ignoré.
+            Evenement::Rangs { session, .. } if session != etat.session_compte => {}
+            Evenement::Rangs { joueurs, .. } => {
                 if let Some(d) = &etat.donnees {
                     afficher_rangs(d, &joueurs);
                 }
@@ -122,6 +137,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                 }
                 affichage::modifier(|e| e.partie = Some(p));
             }
+            Evenement::Historique(maj) => crate::historique::publier(*maj, etat.donnees.as_deref()),
             Evenement::Quitter => break,
         }
     }
@@ -136,6 +152,7 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     if p == Phase::ChampSelect {
         etat.cs = SuiviChampSelect::default();
         etat.partie_scoutee = false;
+        crate::rangs::oublier_partie();
         affichage::modifier(|e| {
             e.champ_select = Some(VueChampSelect::default());
             e.rangs.clear();
@@ -143,14 +160,15 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         });
     }
     affichage::modifier(|e| e.phase = Some(p));
-    // Rangs des 10 joueurs, une fois par partie.
-    if p.en_partie() && !etat.partie_scoutee {
+    // Fin de partie : on récupère la partie chez Riot (historique + récap + LP).
+    // Seulement si spectator a trouvé une partie officielle : une partie personnalisée
+    // ou l'outil d'entraînement n'apparaîtront jamais dans match-v5 (requêtes inutiles).
+    if p == Phase::EndOfGame && crate::rangs::file_partie().is_some() {
         if let (Some(api), Some(puuid)) = (&etat.api, &etat.mon_puuid) {
-            etat.partie_scoutee = true;
-            log!("Recherche des rangs des joueurs...");
-            crate::rangs::scouter_partie(api.clone(), puuid.to_string(), tx.clone());
+            crate::historique::lancer_synchro(api.clone(), puuid.clone(), true, tx.clone());
         }
     }
+    scouter_si_besoin(etat, p, tx);
     // Le suivi de partie (port 2999) ne tourne QUE pendant la partie, et seulement
     // si quelqu'un s'en sert : la console, l'enregistreur (overlay plus tard).
     // En rejeu, les instantanés viennent du fichier, pas du jeu.
@@ -164,6 +182,55 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         _ => {}
     }
     etat.phase = p;
+}
+
+/// Rangs des 10 joueurs, une fois par partie (il faut connaître mon compte).
+fn scouter_si_besoin(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
+    if p.en_partie() && !etat.partie_scoutee {
+        if let (Some(api), Some(puuid)) = (&etat.api, &etat.mon_puuid) {
+            etat.partie_scoutee = true;
+            log!("Recherche des rangs des joueurs...");
+            crate::rangs::scouter_partie(api.clone(), puuid.to_string(), etat.session_compte, tx.clone());
+        }
+    }
+}
+
+/// Multi-comptes : le client annonce son compte à chaque connexion (et dès qu'il
+/// a fini de le charger). Si c'est un AUTRE compte qu'avant (déconnexion puis
+/// connexion d'un ami sur le même PC...), tout ce qui dépend du joueur repart de zéro.
+fn changer_compte(etat: &mut Etat, puuid: Box<str>, summoner_id: Option<u64>, tx: &Sender<Evenement>) {
+    // summonerId (item sets) : toujours celui du compte annoncé. Pour le même compte,
+    // un événement sans summonerId ne fait pas oublier celui déjà connu.
+    if summoner_id.is_some() || etat.mon_puuid.as_deref() != Some(&*puuid) {
+        etat.mon_summoner_id = summoner_id;
+    }
+    if let Some(ancien) = &etat.mon_puuid {
+        if *ancien == puuid {
+            return; // même compte (reconnexion, changement d'icône...) : rien à refaire
+        }
+        // Un compte différent : on oublie ce qui a été fait pour l'ancien.
+        log!("Autre compte connecté au client LoL : on repart de zéro.");
+        // `wrapping_add` : repasse à 0 après u32::MAX au lieu de planter (jamais atteint en pratique).
+        etat.session_compte = etat.session_compte.wrapping_add(1);
+        etat.cs = SuiviChampSelect::default();
+        etat.cs_en_attente = None;
+        etat.partie_scoutee = false;
+        affichage::modifier(|e| {
+            e.champ_select = None;
+            e.rangs.clear();
+            e.partie = None;
+        });
+    }
+    // Premier compte vu : rien à oublier (le champ select en cours reste valable).
+    // Nouveau compte (ou premier) : synchro de son historique en arrière-plan.
+    // (Pas à chaque `Moi` : le client en renvoie un à chaque changement d'XP, d'icône...)
+    if let Some(api) = &etat.api {
+        crate::historique::lancer_synchro(api.clone(), puuid.clone(), false, tx.clone());
+    }
+    etat.mon_puuid = Some(puuid);
+    // Compte annoncé APRÈS le début de la partie : on cherche les rangs maintenant.
+    let phase = etat.phase;
+    scouter_si_besoin(etat, phase, tx);
 }
 
 /// Id Data Dragon ("MonkeyKing") d'un champion.
@@ -190,6 +257,7 @@ fn champ_select(etat: &mut Etat, d: &DonneesJeu, cs: ChampSelect, tx: &Sender<Ev
     if cs.verrouille && cs.champion != 0 && etat.cs.runes_pour != cs.champion {
         etat.cs.runes_pour = cs.champion;
         runes(etat, d, cs.champion, role);
+        objets(etat, d, &cs);
     }
 
     // 3. Compos (seulement quand un pick change).
@@ -207,10 +275,12 @@ fn champ_select(etat: &mut Etat, d: &DonneesJeu, cs: ChampSelect, tx: &Sender<Ev
                 cs.allies.iter().filter_map(|a| a.puuid.as_ref().map(|p| (p.to_string(), a.champion, a.moi))).collect();
             if connus.len() > 1 {
                 etat.cs.rangs_demandes = true;
-                crate::rangs::scouter_allies(api.clone(), connus, tx.clone());
+                crate::rangs::scouter_allies(api.clone(), connus, etat.session_compte, tx.clone());
             }
         }
     }
+    // 5. Matchup de lane et contre-picks (quand mon champion ou les ennemis changent).
+    lane(etat, d, &cs);
     etat.cs.dernier = Some(cs);
 }
 
@@ -335,7 +405,12 @@ fn afficher_rangs(d: &DonneesJeu, joueurs: &[InfoJoueur]) {
         };
         let maitrise = j.maitrise.map_or(String::new(), |(n, p)| format!(" · maîtrise {n} ({} k pts)", p / 1000));
         let moi = if j.moi { " (toi)" } else { "" };
-        log!("{equipe} {:<13} {solo}{flex}{meilleur}{maitrise}  {}{moi}", d.nom_champion(j.champion), j.nom);
+        let badges = if j.badges.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", j.badges.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))
+        };
+        log!("{equipe} {:<13} {solo}{flex}{meilleur}{maitrise}  {}{moi}{badges}", d.nom_champion(j.champion), j.nom);
     }
 }
 
@@ -348,4 +423,231 @@ fn afficher_partie(p: &InstantanePartie) {
             j.champion, j.niveau, j.kills, j.morts, j.assists, j.cs, j.pseudo
         );
     }
+}
+
+// ---------- Stats étendues : matchups, contre-picks, objets, tier list ----------
+
+/// Minimum de parties pour afficher un matchup ou proposer un contre-pick.
+const MIN_PARTIES_MATCHUP: u32 = 10;
+
+/// Au chargement de Data Dragon : télécharge le fichier de stats s'il manque, puis
+/// calcule la tier list (lecture en flux du fichier, dans un thread à part : le
+/// cerveau reste disponible).
+fn preparer_stats_en_fond(d: &Arc<DonneesJeu>) {
+    let d = d.clone();
+    std::thread::spawn(move || {
+        let patch = stats::patch_court(&d.version);
+        if stats::trouver_fichier(&patch).is_none() {
+            stats::mettre_a_jour(&patch);
+        }
+        let Some(t) = stats::trouver_fichier(&patch).and_then(|f| stats::tier_list_depuis_fichier(&f, None)) else {
+            return;
+        };
+        // Fichier d'un ancien format (sans lignes C) ou trop peu de parties :
+        // on ne publie pas une tier list vide.
+        if t.lignes.is_empty() {
+            log!("Tier list : pas de données exploitables pour le patch {patch} (ancien format ou trop peu de parties).");
+            return;
+        }
+        let lignes: Vec<affichage::VueTier> = t
+            .lignes
+            .iter()
+            .map(|l| affichage::VueTier {
+                id: l.champion,
+                champion: d.nom_champion(l.champion).to_string(),
+                role: l.role,
+                winrate: l.stats.winrate(),
+                pick_rate: l.pick_rate,
+                ban_rate: l.ban_rate,
+                score: l.score,
+                parties: l.stats.parties,
+            })
+            .collect();
+        // RAM : ~80 octets par ligne (nom compris).
+        log!("Tier list du patch {} : {} lignes ({} parties, ~{:.1} Ko)", t.patch, lignes.len(), t.parties, (lignes.len() * 80) as f32 / 1024.0);
+        let vue = affichage::VueTierList { patch: t.patch, parties: t.parties, lignes };
+        affichage::modifier(|e| e.tier_list = Some(vue));
+    });
+}
+
+/// Stats du champ select : seulement les lignes de mon champion et des ennemis
+/// visibles (lecture filtrée du fichier, jamais le fichier entier en RAM).
+/// Relues seulement quand cette liste de champions change.
+fn stats_du_champ_select<'a>(
+    cache: &'a mut Option<(Vec<u16>, stats::Stats)>,
+    d: &DonneesJeu,
+    cs: &ChampSelect,
+) -> Option<&'a stats::Stats> {
+    // Champions utiles : les ennemis visibles + le mien (0 = pas encore choisi).
+    let mut champions: Vec<u16> = cs.ennemis.to_vec();
+    champions.push(cs.champion);
+    champions.retain(|&c| c != 0);
+    champions.sort_unstable();
+    champions.dedup();
+    // On ne relit le fichier que si un champion manque dans le cache (un champion
+    // qui SORT de la liste, ex. un survol abandonné, ne coûte aucune relecture).
+    let manque = |deja: &Vec<u16>| champions.iter().any(|c| !deja.contains(c));
+    if cache.as_ref().is_none_or(|(deja, _)| manque(deja)) {
+        let fichier = stats::trouver_fichier(&stats::patch_court(&d.version))?;
+        let s = stats::Stats::charger_filtre(&fichier, &champions)?;
+        log!("  (stats lues pour {} champions : ~{:.1} Ko en RAM)", champions.len(), s.memoire_estimee() as f32 / 1024.0);
+        *cache = Some((champions, s));
+    }
+    cache.as_ref().map(|(_, s)| s)
+}
+
+fn vue_matchup(d: &DonneesJeu, l: &stats::LigneMatchup) -> affichage::VueMatchup {
+    affichage::VueMatchup { champion: d.nom_champion(l.champion).to_string(), winrate: l.stats.winrate(), parties: l.stats.parties }
+}
+
+fn texte_matchups(liste: &[affichage::VueMatchup]) -> String {
+    liste.iter().map(|m| format!("{} ({:.0} % sur {})", m.champion, m.winrate, m.parties)).collect::<Vec<_>>().join(" · ")
+}
+
+/// Adversaire de lane probable, mon matchup contre lui, et (avant de verrouiller)
+/// les contre-picks. Uniquement des champions VISIBLES dans le champ select.
+fn lane(etat: &mut Etat, d: &DonneesJeu, cs: &ChampSelect) {
+    let Some(role) = cs.role.as_deref().and_then(|r| stats::ROLES.iter().copied().find(|x| *x == r)) else { return };
+    let cle = (cs.champion, cs.ennemis.clone(), cs.verrouille);
+    if etat.cs.lane_pour == cle {
+        return;
+    }
+    etat.cs.lane_pour = cle;
+    let annoncer_matchups = cs.champion != 0 && etat.cs.matchups_pour != cs.champion;
+    let Some(s) = stats_du_champ_select(&mut etat.cs.stats_lues, d, cs) else { return };
+
+    // Rôle habituel d'un champion sans stats : le premier rôle de son profil (compo).
+    let par_defaut = |c: u16| id_dd(d, c).and_then(compo::profil).and_then(|p| p.roles.split(',').next());
+    let adversaire = s.adversaire_probable(&cs.ennemis, role, &par_defaut);
+    let matchup = adversaire
+        .filter(|_| cs.champion != 0)
+        .and_then(|a| s.matchup(cs.champion, Some(role), a))
+        .filter(|c| c.parties >= MIN_PARTIES_MATCHUP);
+    // Contre-picks : pas un champion déjà pris (allié ou ennemi).
+    let pris: Vec<u16> = cs.champions_allies().chain(cs.ennemis.iter().copied()).collect();
+    let contre: Vec<affichage::VueMatchup> = match (adversaire, cs.verrouille) {
+        (Some(a), false) => s
+            .contre_picks(a, role, MIN_PARTIES_MATCHUP, 20)
+            .iter()
+            .filter(|l| !pris.contains(&l.champion) || l.champion == cs.champion)
+            .take(5)
+            .map(|l| vue_matchup(d, l))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let (meilleurs, pires) = if cs.champion != 0 {
+        let (m, p) = s.matchups(cs.champion, role, MIN_PARTIES_MATCHUP, 3);
+        (m.iter().map(|l| vue_matchup(d, l)).collect(), p.iter().map(|l| vue_matchup(d, l)).collect())
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    // Journal.
+    let nom_adv = adversaire.map(|a| d.nom_champion(a).to_string());
+    let deja_annonce = adversaire.is_some_and(|a| etat.cs.matchup_annonce == (cs.champion, a));
+    if let (Some(adv), false) = (&nom_adv, deja_annonce) {
+        etat.cs.matchup_annonce = (cs.champion, adversaire.unwrap_or(0));
+        match (cs.champion, matchup) {
+            (0, _) => log!("Adversaire de lane probable : {adv}"),
+            (moi, Some(c)) => log!(
+                "Matchup : {} contre {adv} (adversaire probable) — {:.1} % de victoires sur {} parties",
+                d.nom_champion(moi), c.winrate(), c.parties
+            ),
+            (moi, None) => log!("Matchup : {} contre {adv} (adversaire probable) — pas assez de parties", d.nom_champion(moi)),
+        }
+        if !contre.is_empty() {
+            log!("  Contre-picks contre {adv} : {}", texte_matchups(&contre));
+        }
+    }
+    if annoncer_matchups && !(meilleurs.is_empty() && pires.is_empty()) {
+        etat.cs.matchups_pour = cs.champion;
+        log!("  Meilleurs matchups de {} : {}", d.nom_champion(cs.champion), texte_matchups(&meilleurs));
+        if !pires.is_empty() {
+            log!("  Pires matchups : {}", texte_matchups(&pires));
+        }
+    }
+
+    // Affichage.
+    let vue_mu = matchup.zip(nom_adv.clone()).map(|(c, champion)| affichage::VueMatchup {
+        champion,
+        winrate: c.winrate(),
+        parties: c.parties,
+    });
+    let verrouille = cs.verrouille;
+    affichage::modifier(move |e| {
+        let v = e.champ_select.get_or_insert_with(VueChampSelect::default);
+        v.adversaire_lane = nom_adv;
+        v.matchup = vue_mu;
+        // Après le verrouillage, les contre-picks ne servent plus : on les vide.
+        v.contre_picks = if verrouille { Vec::new() } else { contre };
+        v.meilleurs_matchups = meilleurs;
+        v.pires_matchups = pires;
+    });
+}
+
+fn vue_objets(d: &DonneesJeu, c: &stats::ConseilObjets) -> affichage::VueObjets {
+    let liste = |v: &[(u32, stats::Compteur)]| -> Vec<affichage::VueObjet> {
+        v.iter()
+            .map(|(id, n)| affichage::VueObjet {
+                id: *id,
+                nom: d.nom_objet(*id),
+                frequence: c.frequence(n),
+                winrate: n.winrate(),
+                parties: n.parties,
+            })
+            .collect()
+    };
+    affichage::VueObjets {
+        core: liste(&c.core),
+        bottes: liste(&c.bottes),
+        situationnels: liste(&c.situationnels),
+        parties: c.parties,
+        role: c.role.clone(),
+        item_set_applique: false,
+    }
+}
+
+/// Objets conseillés au verrouillage + item set « stat-traque <champion> » dans le
+/// client (désactivable : `objets=non` dans reglages.txt).
+fn objets(etat: &mut Etat, d: &DonneesJeu, cs: &ChampSelect) {
+    let champion = cs.champion;
+    let Some(s) = stats_du_champ_select(&mut etat.cs.stats_lues, d, cs) else { return };
+    let Some(conseil) = s.conseil_objets(champion, cs.role.as_deref()) else {
+        log!("Objets : pas assez de parties pour {} sur ce patch.", d.nom_champion(champion));
+        return;
+    };
+    let vue = vue_objets(d, &conseil);
+    let texte = |v: &[affichage::VueObjet]| {
+        v.iter().map(|o| format!("{} ({:.0} % des parties, {:.1} % de victoires)", o.nom, o.frequence, o.winrate)).collect::<Vec<_>>().join(" · ")
+    };
+    log!("Objets core : {}", texte(&vue.core));
+    if !vue.bottes.is_empty() {
+        log!("  Bottes : {}", texte(&vue.bottes));
+    }
+    if !vue.situationnels.is_empty() {
+        log!("  Situationnels : {}", vue.situationnels.iter().map(|o| o.nom.as_str()).collect::<Vec<_>>().join(", "));
+    }
+    affichage::modifier(|e| e.champ_select.get_or_insert_with(VueChampSelect::default).objets = Some(vue));
+
+    // Item set dans le client (pas en rejeu, pas si désactivé, il faut mon summonerId).
+    let Some(lcu) = etat.lcu.clone().filter(|_| etat.mode != Mode::Rejeu) else { return };
+    if crate::stockage::Reglages::charger().get("objets") == Some("non") { // relu : modifiable dans la fenêtre
+        return;
+    }
+    let Some(summoner_id) = etat.mon_summoner_id else {
+        log!("Item set non appliqué : compte du client inconnu.");
+        return;
+    };
+    let set = crate::lcu::actions::json_item_set(champion, d.nom_champion(champion), &conseil.blocs());
+    std::thread::spawn(move || match crate::lcu::actions::appliquer_item_set(&lcu, summoner_id, set) {
+        Ok(()) => {
+            log!("Item set appliqué (boutique : « stat-traque … »).");
+            affichage::modifier(|e| {
+                if let Some(o) = e.champ_select.as_mut().and_then(|v| v.objets.as_mut()) {
+                    o.item_set_applique = true;
+                }
+            });
+        }
+        Err(e) => log!("Item set non appliqué : {e}"),
+    });
 }

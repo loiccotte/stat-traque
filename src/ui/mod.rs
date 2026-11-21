@@ -7,6 +7,7 @@
 //!   fenetre.rs   thread de la fenêtre, ouverture / fermeture, overlay (egui)
 //!   ecrans.rs    dessin des onglets de la fenêtre principale
 //!   overlay.rs   dessin de l'overlay en jeu
+//!   historique.rs  onglets Historique (parties, stats, LP, récap) et Tier list
 //!   theme.rs     couleurs (bleu nuit / or)
 //!   onglets.rs   liste des onglets (pur, testé)
 //!   format.rs    mise en forme des textes (pur, testé)
@@ -28,6 +29,8 @@ pub mod reglages;
 mod ecrans;
 #[cfg(any(windows, target_os = "linux"))]
 mod fenetre;
+#[cfg(any(windows, target_os = "linux"))]
+mod historique;
 #[cfg(any(windows, target_os = "linux"))]
 mod mesure;
 #[cfg(any(windows, target_os = "linux"))]

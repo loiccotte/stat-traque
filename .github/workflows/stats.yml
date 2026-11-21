@@ -1,0 +1,101 @@
+# Stats de runes et de sorts, publiées automatiquement chaque jour.
+#
+# Les fichiers sont attachés à la release GitHub "stats" (une PRÉ-version : ainsi
+# "releases/latest", lu par la mise à jour automatique, reste la dernière vraie version).
+# L'app télécharge :
+#   https://github.com/loiccotte/stat-traque/releases/download/stats/stats-<patch>.tsv
+# (voir URL_STATS et mettre_a_jour dans src/stats.rs).
+#
+# Prérequis : le secret RIOT_API_KEY (Settings > Secrets and variables > Actions).
+# Une clé de développement expire en 24 h : prendre une clé de production Riot.
+# Le cron ne tourne QUE depuis la branche par défaut du dépôt (règle de GitHub).
+#
+# Sécurité : chaque secret n'est donné qu'à l'étape qui en a besoin (jamais à la
+# compilation, ni au cache, ni au build.rs d'une dépendance).
+name: stats
+on:
+  schedule:
+    - cron: "17 3 * * *" # chaque jour vers 3 h 17 UTC
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Durée de la collecte (minutes, 340 max)"
+        default: "300"
+
+permissions:
+  contents: write # créer la release "stats" et y déposer les fichiers
+
+# Jamais deux collectes en même temps (elles écraseraient les mêmes fichiers).
+concurrency: stats
+
+jobs:
+  collecter:
+    runs-on: ubuntu-latest # le code compile sous Linux : plus rapide et moins cher que Windows
+    timeout-minutes: 355 # limite GitHub : 6 h
+    env:
+      GH_REPO: ${{ github.repository }}
+      # L'app range tout dans $APPDATA/stat-traque : on le fait pointer vers le runner.
+      APPDATA: ${{ github.workspace }}/appdata
+    steps:
+      - name: Clé API présente ?
+        id: cle
+        env:
+          RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
+        run: |
+          if [ -z "$RIOT_API_KEY" ]; then
+            echo "::warning::Secret RIOT_API_KEY absent : pas de collecte. Ajoute-le dans Settings > Secrets and variables > Actions."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cle.outputs.ok == 'true'
+        with:
+          persist-credentials: false # le jeton GitHub ne reste pas dans .git/config
+      - uses: Swatinem/rust-cache@v2
+        if: steps.cle.outputs.ok == 'true'
+      - name: Compilation
+        if: steps.cle.outputs.ok == 'true'
+        run: cargo build --release
+      - name: Reprise des comptes déjà publiés
+        if: steps.cle.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dossier="$APPDATA/stat-traque/cache/stats"
+          mkdir -p "$dossier"
+          # Première fois : on crée la release "stats" (pré-version, jamais "latest").
+          if ! gh release view stats > /dev/null 2>&1; then
+            gh release create stats --prerelease --latest=false --title "Stats de runes (automatique)" \
+              --notes "Fichiers mis à jour chaque jour par .github/workflows/stats.yml. Ne pas supprimer."
+          fi
+          # stats-<patch>.tsv = les comptes ; vus-<patch>-<serveur>.txt = parties déjà comptées
+          # (sans lui, la collecte du lendemain compterait deux fois les mêmes parties).
+          gh release download stats --dir "$dossier" --clobber || echo "Aucun fichier publié pour l'instant."
+          ls -l "$dossier"
+      - name: Collecte
+        if: steps.cle.outputs.ok == 'true'
+        env:
+          STAT_TRAQUE_CLE: ${{ secrets.RIOT_API_KEY }}
+          MINUTES: ${{ github.event.inputs.minutes || '300' }}
+        run: |
+          # Entrée manuelle bornée : un nombre entre 1 et 340 (le job est coupé à 6 h).
+          case "$MINUTES" in
+            ''|*[!0-9]*) echo "::warning::Durée '$MINUTES' invalide : 300 min."; MINUTES=300 ;;
+          esac
+          if [ "$MINUTES" -gt 340 ]; then MINUTES=340; fi
+          if [ "$MINUTES" -lt 1 ]; then MINUTES=1; fi
+          ./target/release/stat-traque collecter "$MINUTES"
+      - name: Publication
+        if: steps.cle.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dossier="$APPDATA/stat-traque/cache/stats"
+          shopt -s nullglob
+          fichiers=("$dossier"/stats-*.tsv "$dossier"/vus-*.txt)
+          if [ ${#fichiers[@]} -eq 0 ]; then
+            echo "::warning::Aucun fichier de stats produit (clé expirée ? voir le journal ci-dessus)."
+            exit 0
+          fi
+          gh release upload stats "${fichiers[@]}" --clobber

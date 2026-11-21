@@ -13,7 +13,7 @@ use super::format;
 use super::onglets::{onglet_conseille, Onglet};
 use super::reglages::{libelle_region, FormReglages, REGIONS};
 use super::theme;
-use crate::affichage::{EtatAffichage, VueChampSelect, VueRunes};
+use crate::affichage::{EtatAffichage, VueChampSelect, VueObjets, VueRunes};
 use crate::compo::AnalyseEquipe;
 use crate::ddragon::DonneesJeu;
 use crate::gameflow::Phase;
@@ -91,11 +91,11 @@ fn dessiner_onglet(ui: &mut Ui, ecran: &mut Ecran, etat: &EtatAffichage) {
             None => vide(ui, "Pas de champ select en cours. Lance une partie : l'analyse s'affichera ici."),
         },
         Onglet::Partie => dessiner_partie(ui, etat, donnees),
-        Onglet::Historique => vide(
-            ui,
-            "Bientôt : l'historique de tes parties, ton récap après chaque partie \
-             et la comparaison à ta moyenne apparaîtront ici.",
-        ),
+        Onglet::Historique => super::historique::dessiner(ui, etat, donnees),
+        Onglet::TierList => match &etat.tier_list {
+            Some(t) => super::historique::dessiner_tier_list(ui, t),
+            None => vide(ui, "Pas encore de stats pour ce patch (stat-traque collecter 30)."),
+        },
         Onglet::Journal => dessiner_journal(ui, &etat.messages),
         Onglet::Reglages => dessiner_reglages(ui, ecran),
     }
@@ -157,6 +157,14 @@ fn dessiner_champ_select(ui: &mut Ui, cs: &VueChampSelect, donnees: Option<&Donn
     if let Some(r) = &cs.runes {
         ui.add_space(8.0);
         dessiner_runes(ui, r);
+    }
+    if cs.adversaire_lane.is_some() || !cs.meilleurs_matchups.is_empty() || !cs.pires_matchups.is_empty() {
+        ui.add_space(8.0);
+        dessiner_matchups(ui, cs);
+    }
+    if let Some(o) = &cs.objets {
+        ui.add_space(8.0);
+        dessiner_objets(ui, o);
     }
     // Les futures sections (fiche matchup, tier list...) se placent ici, chacune
     // dans un `if let Some(..)` : rien ne s'affiche tant que la donnée n'existe pas.
@@ -278,6 +286,81 @@ fn dessiner_runes(ui: &mut Ui, r: &VueRunes) {
     });
 }
 
+/// Adversaire de lane, contre-picks, meilleurs / pires duels.
+fn dessiner_matchups(ui: &mut Ui, cs: &VueChampSelect) {
+    theme::carte().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        theme::titre(ui, "Matchups");
+        if let Some(adv) = &cs.adversaire_lane {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Adversaire probable :").color(theme::TEXTE_DOUX));
+                ui.label(RichText::new(adv).strong());
+                match &cs.matchup {
+                    Some(m) => {
+                        ui.label(RichText::new(format::pourcent(m.winrate)).color(couleur_winrate(m.winrate)).strong());
+                        ui.label(RichText::new(format!("pour toi sur {} parties", format::milliers(m.parties))).color(theme::TEXTE_DOUX));
+                    }
+                    None => {
+                        ui.label(RichText::new("(pas assez de parties sur ce duel)").color(theme::TEXTE_DOUX));
+                    }
+                }
+            });
+        }
+        let listes = [
+            ("Contre-picks", &cs.contre_picks),
+            ("Tes meilleurs duels", &cs.meilleurs_matchups),
+            ("Tes pires duels", &cs.pires_matchups),
+        ];
+        for (titre, liste) in listes.into_iter().filter(|(_, l)| !l.is_empty()) {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("{titre} :")).color(theme::TEXTE_DOUX));
+                for m in liste.iter() {
+                    ui.label(RichText::new(&m.champion).strong());
+                    ui.label(RichText::new(format::pourcent(m.winrate)).color(couleur_winrate(m.winrate)))
+                        .on_hover_text(format!("{} parties", format::milliers(m.parties)));
+                    ui.add_space(6.0);
+                }
+            });
+        }
+    });
+}
+
+/// Objets conseillés : core, bottes, situationnels.
+fn dessiner_objets(ui: &mut Ui, o: &VueObjets) {
+    theme::carte().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.horizontal(|ui| {
+            theme::titre(ui, "Objets conseillés");
+            ui.label(RichText::new(format!("{} parties analysées", format::milliers(o.parties))).color(theme::TEXTE_DOUX).small());
+            if o.item_set_applique {
+                ui.label(RichText::new("item set ajouté à la boutique").color(theme::VERT).small());
+            }
+        });
+        egui::Grid::new("objets").num_columns(4).spacing([14.0, 3.0]).show(ui, |ui| {
+            for (groupe, objets) in [("Core", &o.core), ("Bottes", &o.bottes), ("Situationnels", &o.situationnels)] {
+                for (i, obj) in objets.iter().enumerate() {
+                    ui.label(RichText::new(if i == 0 { groupe } else { "" }).color(theme::TEXTE_DOUX));
+                    ui.label(RichText::new(&obj.nom).strong());
+                    ui.label(format!("dans {} des parties", format::pourcent_entier(obj.frequence)));
+                    ui.label(RichText::new(format!("{} de victoires", format::pourcent(obj.winrate))).color(couleur_winrate(obj.winrate)));
+                    ui.end_row();
+                }
+            }
+        });
+    });
+}
+
+/// Vert au-dessus de 51 %, rouge sous 49 %, neutre entre les deux.
+pub fn couleur_winrate(winrate: f32) -> Color32 {
+    if winrate >= 51.0 {
+        theme::VERT
+    } else if winrate <= 49.0 {
+        theme::EQUIPE_ROUGE
+    } else {
+        theme::TEXTE
+    }
+}
+
 /// « valeur libellé » : la valeur en évidence, le libellé en discret.
 fn stat(ui: &mut Ui, libelle: &str, valeur: &str) {
     ui.label(RichText::new(valeur).color(theme::OR).strong());
@@ -320,8 +403,8 @@ fn dessiner_partie(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJe
 }
 
 fn tableau_rangs(ui: &mut Ui, id: &str, joueurs: &[&InfoJoueur], donnees: Option<&DonneesJeu>) {
-    egui::Grid::new(("rangs", id)).num_columns(7).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-        for entete in ["Champion", "Joueur", "Solo", "Bilan solo", "Flex", "Maîtrise", "Meilleur vu"] {
+    egui::Grid::new(("rangs", id)).num_columns(8).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+        for entete in ["Champion", "Joueur", "Solo", "Bilan solo", "Flex", "Maîtrise", "Meilleur vu", "Badges"] {
             ui.label(RichText::new(entete).color(theme::TEXTE_DOUX).small());
         }
         ui.end_row();
@@ -343,6 +426,8 @@ fn tableau_rangs(ui: &mut Ui, id: &str, joueurs: &[&InfoJoueur], donnees: Option
             ui.label(j.flex.as_ref().map_or(String::new(), |r| r.to_string()));
             ui.label(format::maitrise(j.maitrise));
             ui.label(format::meilleur_vu(j).unwrap_or_default());
+            let badges: Vec<String> = j.badges.iter().map(|b| b.to_string()).collect();
+            ui.label(RichText::new(badges.join(" · ")).color(theme::TURQUOISE).small());
             ui.end_row();
         }
     });
@@ -394,6 +479,7 @@ fn dessiner_reglages(ui: &mut Ui, ecran: &mut Ecran) {
         });
         ui.checkbox(&mut f.runes_auto, "Appliquer les runes conseillées au verrouillage");
         ui.checkbox(&mut f.sorts_auto, "Appliquer les sorts conseillés au verrouillage");
+        ui.checkbox(&mut f.objets_auto, "Ajouter l'item set conseillé dans la boutique");
         ui.checkbox(&mut f.fenetre_auto, "Ouvrir cette fenêtre au début du champ select");
         ui.label(RichText::new("Pris en compte dès le prochain champ select.").color(theme::TEXTE_DOUX).small());
     });

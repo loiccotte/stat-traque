@@ -30,6 +30,8 @@ pub struct FormReglages {
     pub flash_sur_f: bool,
     pub runes_auto: bool,
     pub sorts_auto: bool,
+    /// Item set « stat-traque » ajouté dans la boutique du client.
+    pub objets_auto: bool,
     pub enregistrer: bool,
     /// Ouvrir la fenêtre toute seule au début du champ select.
     pub fenetre_auto: bool,
@@ -51,6 +53,7 @@ impl FormReglages {
             flash_sur_f: r.get("flash").is_some_and(|f| f.eq_ignore_ascii_case("f")),
             runes_auto: active(r, "runes"),
             sorts_auto: active(r, "sorts"),
+            objets_auto: active(r, "objets"),
             enregistrer: active(r, "enregistrer"),
             fenetre_auto: active(r, "fenetre_auto"),
             region: r.region().to_string(),
@@ -62,6 +65,7 @@ impl FormReglages {
         r.set("flash", if self.flash_sur_f { "f" } else { "d" });
         r.set("runes", oui_non(self.runes_auto));
         r.set("sorts", oui_non(self.sorts_auto));
+        r.set("objets", oui_non(self.objets_auto));
         r.set("enregistrer", oui_non(self.enregistrer));
         r.set("fenetre_auto", oui_non(self.fenetre_auto));
         r.set("region", &self.region);
@@ -80,7 +84,7 @@ mod tests {
     #[test]
     fn valeurs_par_defaut() {
         let f = FormReglages::depuis(&Reglages::default());
-        assert!(!f.flash_sur_f && f.runes_auto && f.sorts_auto && f.enregistrer && f.fenetre_auto);
+        assert!(!f.flash_sur_f && f.runes_auto && f.sorts_auto && f.objets_auto && f.enregistrer && f.fenetre_auto);
         assert_eq!(f.region, "euw1");
     }
 

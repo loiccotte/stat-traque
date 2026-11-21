@@ -31,6 +31,9 @@ pub enum Evenement {
     Moi { puuid: Box<str> },
     /// Rangs des joueurs (alliés en champ select non classé, ou les 10 en partie).
     Rangs(Vec<crate::rangs::InfoJoueur>),
+    /// Synchro de mon historique terminée (parties, stats perso, LP, récap éventuel).
+    /// `Box` : le contenu est gros, l'événement reste petit dans le canal.
+    Historique(Box<crate::historique::MajHistorique>),
     /// Demande d'arrêt (menu "Quitter" de l'icône).
     #[cfg_attr(not(windows), allow(dead_code))]
     Quitter,

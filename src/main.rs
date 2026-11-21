@@ -13,6 +13,7 @@
 //   gameflow.rs    les phases du client (salon, champ select, partie...)
 //   ddragon.rs     données du patch, en cache sur le disque
 //   riot_api/      API Riot : limiteur de débit + cache
+//   historique.rs  mes parties, stats perso, LP, récap (base locale TSV)
 //   stockage.rs    dossier %APPDATA%\stat-traque (clé, réglages, cache)
 //   http.rs        clients HTTP partagés
 //   tray.rs        icône Windows
@@ -32,6 +33,7 @@ mod ddragon;
 mod enregistreur;
 mod evenement;
 mod gameflow;
+mod historique;
 mod http;
 mod journal;
 mod lcu;
@@ -54,6 +56,7 @@ const AIDE: &str = "stat-traque — alternative légère à Blitz
   stat-traque region euw1        change de serveur (euw1, eun1, na1, kr...)
   stat-traque --rejouer f.jsonl  rejoue une session enregistrée (sans LoL)
   stat-traque collecter 30       collecte 30 min de parties Master+ (stats de runes)
+  stat-traque historique         mes parties, stats perso et LP (base locale, hors ligne)
   stat-traque aide               affiche cette aide";
 
 fn main() {
@@ -65,6 +68,10 @@ fn main() {
     match args.as_slice() {
         ["cle", cle] => return commande_cle(cle),
         ["region", r] => return commande_region(r),
+        ["historique"] => {
+            tray::ouvrir_console();
+            return historique::commande();
+        }
         ["--rejouer", fichier] => return commande_rejouer(fichier),
         ["collecter", minutes] => {
             tray::ouvrir_console();

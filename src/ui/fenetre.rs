@@ -187,8 +187,29 @@ fn boucle() {
             d.overlay = false;
         }
         *CONTEXTE.lock().unwrap() = None;
+        rendre_la_memoire();
         DEMANDES.lock().unwrap().en_cours = None;
         SIGNAL.notify_all();
+    }
+}
+
+/// Après la fermeture : demande à Windows de sortir de la RAM les pages qui ne
+/// servent plus (code du pilote graphique, polices...). Elles seront relues du
+/// disque si on rouvre la fenêtre. Coût : quelques ms, une fois par fermeture.
+fn rendre_la_memoire() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+        // (-1, -1) = « vide mon working set » (documenté par Microsoft).
+        unsafe { SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX) };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // glibc garde la mémoire libérée pour plus tard : on la lui fait rendre.
+        extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        unsafe { malloc_trim(0) };
     }
 }
 

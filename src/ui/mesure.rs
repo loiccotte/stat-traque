@@ -8,31 +8,39 @@ use super::{basculer_overlay, demarrer, demo, fermer, ouvrir};
 use crate::affichage;
 use crate::gameflow::Phase;
 
-/// RAM réellement occupée par le processus (« working set » / RSS), en Mo.
-pub fn memoire_mo() -> f64 {
+/// RAM du processus en Mo : (totale en RAM, privée).
+///  - totale = « working set » Windows / RSS Linux : inclut le code des DLL
+///    partagées avec les autres programmes (pilote graphique...) ;
+///  - privée = mémoire propre à stat-traque (ce que le Gestionnaire des tâches
+///    affiche par défaut, colonne « Mémoire »). C'est elle qui compte pour le budget.
+pub fn memoire_mo() -> (f64, f64) {
+    const MO: f64 = 1_048_576.0;
     #[cfg(windows)]
     {
-        use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+        use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
         use windows_sys::Win32::System::Threading::GetCurrentProcess;
         // SAFETY : structure C simple remplie par Windows ; on lui donne sa taille.
         unsafe {
-            let mut c: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
-            c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
-            if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) != 0 {
-                return c.WorkingSetSize as f64 / 1_048_576.0;
+            let mut c: PROCESS_MEMORY_COUNTERS_EX = std::mem::zeroed();
+            c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+            if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c as *mut _ as *mut _, c.cb) != 0 {
+                return (c.WorkingSetSize as f64 / MO, c.PrivateUsage as f64 / MO);
             }
         }
-        0.0
+        (0.0, 0.0)
     }
     #[cfg(not(windows))]
     {
-        // Linux : ligne « VmRSS:  12345 kB » de /proc/self/status.
+        // Linux : lignes « VmRSS:  12345 kB » et « RssAnon: ... » de /proc/self/status.
         let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-        status
-            .lines()
-            .find_map(|l| l.strip_prefix("VmRSS:"))
-            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<f64>().ok())
-            .map_or(0.0, |kb| kb / 1024.0)
+        let ligne = |nom: &str| {
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix(nom))
+                .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<f64>().ok())
+                .map_or(0.0, |kb| kb * 1024.0 / MO)
+        };
+        (ligne("VmRSS:"), ligne("RssAnon:"))
     }
 }
 
@@ -66,16 +74,19 @@ fn etape(nom: &str, secondes: u64) {
     let debut = Instant::now();
     std::thread::sleep(Duration::from_secs(secondes));
     let pourcent = (temps_cpu() - cpu).as_secs_f64() * 100.0 / debut.elapsed().as_secs_f64();
-    println!("{nom:<42} RAM {:>6.1} Mo   CPU {pourcent:>5.2} %", memoire_mo());
+    let (totale, privee) = memoire_mo();
+    println!("{nom:<40} privée {privee:>6.1} Mo   totale {totale:>6.1} Mo   CPU {pourcent:>5.2} %");
 }
 
-/// Déroulé de l'essai (environ 40 s). Fermer la fenêtre à la main n'est pas nécessaire.
+/// Déroulé de l'essai (environ 45 s). Rien à faire : tout s'ouvre et se ferme seul.
 pub fn essai() {
     println!("stat-traque — essai de la fenêtre (données de démonstration)\n");
     etape("1. Au repos, aucune fenêtre", 3);
     demarrer();
-    affichage::modifier(|e| *e = demo::etat(Phase::ChampSelect));
+    affichage::modifier(|e| *e = demo::etat(Phase::Lobby));
     etape("2. Thread fenêtre prêt, aucune fenêtre", 3);
+    // Passage en champ select : la fenêtre s'ouvre seule (sauf fenetre_auto=non).
+    affichage::modifier(|e| e.phase = Some(Phase::ChampSelect));
     ouvrir();
     etape("3. Fenêtre ouverte (champ select)", 6);
     etape("4. Fenêtre ouverte, rien ne change", 5);
@@ -88,5 +99,6 @@ pub fn essai() {
     etape("8. Overlay, rien ne change", 5);
     fermer();
     etape("9. Tout fermé", 4);
-    println!("\nBudgets : < 15 Mo fenêtre fermée, < 40 Mo en partie (overlay), CPU ~0 % quand rien ne change.");
+    println!("\nBudgets : < 15 Mo au repos, < 40 Mo en partie (overlay), CPU ~0 % quand rien ne change.");
+    println!("Le budget porte sur la mémoire PRIVÉE (colonne « Mémoire » du Gestionnaire des tâches).");
 }

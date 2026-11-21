@@ -11,8 +11,9 @@
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use crate::serde_statique::Texte;
 use crate::compo::AnalyseEquipe;
 use crate::gameflow::Phase;
 use crate::live::InstantanePartie;
@@ -22,7 +23,7 @@ use crate::rangs::InfoJoueur;
 /// Lignes de journal gardées pour l'onglet « Journal ».
 const MESSAGES_MAX: usize = 100;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct VueRunes {
     /// Ex : "Électrocution + Inspiration [Impact soudain, ...]"
     pub page: String,
@@ -36,7 +37,7 @@ pub struct VueRunes {
     pub role: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct VueChampSelect {
     pub mon_champion: Option<String>,
     pub role: Option<String>,
@@ -66,7 +67,7 @@ pub struct VueChampSelect {
 }
 
 /// Un duel de lane, vu de MON côté.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VueMatchup {
     /// L'autre champion : l'adversaire, ou le champion conseillé (contre-picks).
     pub champion: String,
@@ -75,7 +76,7 @@ pub struct VueMatchup {
     pub parties: u32,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VueObjet {
     pub id: u32,
     pub nom: String,
@@ -85,7 +86,7 @@ pub struct VueObjet {
     pub parties: u32,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VueObjets {
     /// Les 3 légendaires les plus construits.
     pub core: Vec<VueObjet>,
@@ -100,12 +101,13 @@ pub struct VueObjets {
 }
 
 /// Une ligne de la tier list.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VueTier {
     pub id: u16,
     pub champion: String,
     /// "top", "jungle", "middle", "bottom", "utility".
-    pub role: &'static str,
+    #[serde(deserialize_with = "crate::serde_statique::texte")]
+    pub role: Texte,
     pub winrate: f32,
     pub pick_rate: f32,
     pub ban_rate: f32,
@@ -114,7 +116,7 @@ pub struct VueTier {
     pub parties: u32,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VueTierList {
     pub patch: String,
     pub parties: u32,
@@ -122,7 +124,7 @@ pub struct VueTierList {
     pub lignes: Vec<VueTier>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct EtatAffichage {
     pub phase: Option<Phase>,
     pub client_connecte: bool,
@@ -131,15 +133,27 @@ pub struct EtatAffichage {
     pub rangs: Vec<InfoJoueur>,
     pub partie: Option<InstantanePartie>,
     pub messages: Vec<String>,
+    /// Données du patch (noms des champions, objets...) : partagées, pas copiées
+    /// (`Arc` = pointeur partagé, le cloner ne copie que le pointeur).
+    /// Pas envoyées à la fenêtre : elle les relit dans le cache Data Dragon.
+    #[serde(skip)]
+    pub donnees: Option<Arc<crate::ddragon::DonneesJeu>>,
+    // Les champs GROS ci-dessous sont dans des `Arc` : `lire()` ne copie qu'un
+    // pointeur, et la fenêtre ne les reçoit que quand ils changent (`#[serde(skip)]` :
+    // envoyés à part, voir ui/parent.rs). Pour les modifier : `e.historique = Arc::new(..)`.
     /// Tier list du patch (tous rôles), calculée une fois au démarrage.
-    pub tier_list: Option<VueTierList>,
+    #[serde(skip)]
+    pub tier_list: Option<Arc<VueTierList>>,
     // --- Historique et stats perso (feature/historique, voir historique.rs) ---
     /// Mes 20 dernières parties, plus récentes d'abord (champion = id : nom via Data Dragon).
-    pub historique: Vec<crate::historique::ResumePartie>,
+    #[serde(skip)]
+    pub historique: Arc<Vec<crate::historique::ResumePartie>>,
     /// Mes moyennes par champion / rôle / patch / file.
-    pub stats_perso: Option<crate::historique::StatsPerso>,
+    #[serde(skip)]
+    pub stats_perso: Option<Arc<crate::historique::StatsPerso>>,
     /// Rang actuel, meilleur rang, LP sur 7 jours, derniers points (graphique).
-    pub progression_lp: Option<crate::historique::ProgressionLp>,
+    #[serde(skip)]
+    pub progression_lp: Option<Arc<crate::historique::ProgressionLp>>,
     /// Récap de la dernière partie, comparé à ma moyenne sur ce champion.
     pub recap: Option<crate::historique::Recap>,
 }
@@ -163,6 +177,16 @@ pub fn lire() -> EtatAffichage {
     ETAT.lock().unwrap().clone().unwrap_or_default()
 }
 
+/// Lit une PARTIE de l'état sans tout copier (ex : l'overlay ne veut que les rangs).
+/// `f` s'exécute sous le verrou : elle doit être courte et ne pas appeler `modifier`.
+pub fn avec<R>(f: impl FnOnce(&EtatAffichage) -> R) -> R {
+    let verrou = ETAT.lock().unwrap();
+    match verrou.as_ref() {
+        Some(e) => f(e),
+        None => f(&EtatAffichage::default()),
+    }
+}
+
 /// Change à chaque modification : l'interface ne copie l'état que si ça a changé.
 pub fn version() -> u64 {
     VERSION.load(Ordering::Acquire)
@@ -181,4 +205,10 @@ pub fn message(texte: String) {
             e.messages.remove(0);
         }
     });
+}
+
+/// Phase actuelle seulement (sans copier tout l'état) : l'interface s'en sert à
+/// chaque changement pour ouvrir la fenêtre au champ select, gérer l'overlay...
+pub fn phase() -> Option<Phase> {
+    ETAT.lock().unwrap().as_ref().and_then(|e| e.phase)
 }

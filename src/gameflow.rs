@@ -1,7 +1,7 @@
 //! Les phases du client LoL (`/lol-gameflow/v1/gameflow-phase`).
 //! On les traduit en `enum` : le compilateur nous oblige alors à traiter tous les cas.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Phase {
     Aucune,
     Lobby,

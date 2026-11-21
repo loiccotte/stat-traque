@@ -29,7 +29,7 @@ Priorité : P0 indispensable · P1 important · P2 bonus
 | F14 | Winrate du joueur sur son champion, nb de parties | 🔜 | P0 | — | T16 |
 | F15 | Badges : main, 1re partie sur le champ, série V/D | ✅ | P1 | calculés en local (série de défaites : seulement pour toi, base locale) | T16 |
 | F16 | Items et niveaux en direct | 🔜 | P1 | API locale 2999 seulement en partie | T17 |
-| F17 | Overlay click-through, ouvert/fermé par raccourci | 🔜 | P1 | fenêtre transparente, aucune injection | T18 |
+| F17 | Overlay click-through, ouvert/fermé par raccourci | 🟡 | P1 | fenêtre transparente, aucune injection | T18 |
 | F18 | Détection des duos (premades) | ✅ | P2 | 1 requête par joueur : ≥ 3 parties communes dont la dernière de l’un, ou ≥ 3 parmi les 5 dernières | T16 |
 
 ## 3. Après la partie
@@ -72,7 +72,7 @@ et on demande l'accord de l'auteur avant de distribuer une fiche avec l'app.
 | ID | Feature | Statut | Prio | Mieux que Blitz | Tâche |
 |---|---|---|---|---|---|
 | F25 | Clé API : stockage local, détection d'expiration | ✅ | P0 | jamais dans le dépôt | T06 |
-| F26 | Icône tray (fait), fenêtre créée seulement à l'ouverture | 🔜 | P0 | RAM < 15 Mo au repos | T07 |
+| F26 | Icône tray (fait), fenêtre créée seulement à l'ouverture | 🟡 | P0 | RAM < 15 Mo au repos | T07 |
 | F27 | Cache Data Dragon hors ligne, mis à jour par patch | ✅ | P0 | démarrage instantané | T04 |
 | F28 | Multi-région (EUW, EUNE, NA, KR…) : `stat-traque region kr` | ✅ | P1 | — | T06 |
 | F29 | Multi-comptes (détecte le compte connecté) | ✅ | P1 | aucun compte stat-traque | T09 |

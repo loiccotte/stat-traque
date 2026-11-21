@@ -23,7 +23,7 @@ const INTERVALLE: Duration = Duration::from_secs(5);
 /// (Le client LoL peut être fermé pendant la partie : on ne compte pas sur lui.)
 const ECHECS_MAX: u32 = 12;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct JoueurLive {
     pub pseudo: Box<str>,
     pub champion: Box<str>,
@@ -38,7 +38,7 @@ pub struct JoueurLive {
     pub items: Vec<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstantanePartie {
     pub mode: Box<str>,
     pub secondes: u32,

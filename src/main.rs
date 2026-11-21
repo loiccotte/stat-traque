@@ -17,6 +17,7 @@
 //   stockage.rs    dossier %APPDATA%\stat-traque (clé, réglages, cache)
 //   http.rs        clients HTTP partagés
 //   tray.rs        icône Windows
+//   ui/            fenêtre (onglets) et overlay, créés seulement quand on les ouvre
 //   demarrage.rs   lancement avec Windows (registre)
 //   maj.rs         mise à jour automatique (releases GitHub)
 //   journal.rs     messages (console + fichier)
@@ -46,8 +47,10 @@ mod rangs;
 mod rejeu;
 mod stats;
 mod riot_api;
+mod serde_statique;
 mod stockage;
 mod tray;
+mod ui;
 
 use std::sync::mpsc;
 use std::time::Instant;
@@ -59,6 +62,10 @@ const AIDE: &str = "stat-traque — alternative légère à Blitz
   stat-traque cle RGAPI-xxxx     enregistre ta clé API Riot (stockée en local)
   stat-traque region euw1        change de serveur (euw1, eun1, na1, kr...)
   stat-traque --rejouer f.jsonl  rejoue une session enregistrée (sans LoL)
+  stat-traque --rejouer f.jsonl --fenetre   idem, puis affiche le résultat dans la fenêtre
+  stat-traque essai-fenetre      mesure RAM / CPU : fenêtre ouverte, fermée, overlay
+  stat-traque essai-fenetre voir ouvre la fenêtre avec des données de démonstration
+  stat-traque essai-fenetre overlay  affiche l'overlay de démonstration (Ctrl+C pour arrêter)
   stat-traque collecter 30       collecte 30 min de parties Master+ (stats de runes)
   stat-traque tierlist [role]    tier list du patch (top, jungle, mid, adc, support)
   stat-traque historique         mes parties, stats perso et LP (base locale, hors ligne)
@@ -72,14 +79,28 @@ fn main() {
 
     // Commandes ponctuelles : on fait la chose et on s'arrête.
     match args.as_slice() {
+        // Processus de la fenêtre, lancé par stat-traque lui-même (ui/parent.rs) :
+        // AVANT le verrou d'instance unique et l'icône (ce n'est pas une 2e instance).
+        ["--fenetre"] => return ui::processus_fenetre(false),
+        ["--fenetre", "overlay"] => return ui::processus_fenetre(true),
         ["cle", cle] => return commande_cle(cle),
         ["region", r] => return commande_region(r),
+        ["--rejouer", fichier] => return commande_rejouer(fichier, false),
+        ["--rejouer", fichier, "--fenetre"] => return commande_rejouer(fichier, true),
+        ["essai-fenetre"] => {
+            tray::ouvrir_console();
+            return ui::essai();
+        }
+        ["essai-fenetre", "voir"] => return ui::apercu(false),
+        ["essai-fenetre", "overlay"] => {
+            tray::ouvrir_console();
+            return ui::apercu(true);
+        }
         ["historique"] => {
             tray::ouvrir_console();
             return historique::commande();
         }
         ["demarrage", choix] => return commande_demarrage(choix),
-        ["--rejouer", fichier] => return commande_rejouer(fichier),
         ["collecter", minutes] => {
             tray::ouvrir_console();
             journal::initialiser();
@@ -131,6 +152,8 @@ fn main() {
     if console {
         cerveau::boucle(rx, tx, cerveau::Mode::Console);
     } else {
+        // Thread de la fenêtre : il dort jusqu'au premier clic sur l'icône.
+        ui::demarrer(Some(tx.clone()));
         // Windows : la fenêtre de l'icône doit tourner sur le thread principal.
         let tx_cerveau = tx.clone();
         std::thread::Builder::new()
@@ -138,18 +161,27 @@ fn main() {
             .spawn(move || cerveau::boucle(rx, tx_cerveau, cerveau::Mode::Tray))
             .expect("impossible de lancer le cerveau");
         tray::lancer(tx); // revient quand on clique sur "Quitter"
+        // Fermer proprement la fenêtre (processus enfant), sans attendre plus de 0,5 s.
+        ui::fermer_et_attendre(std::time::Duration::from_millis(500));
     }
 }
 
 /// Rejoue un enregistrement dans la console, avec les données du patch en cache.
-fn commande_rejouer(fichier: &str) {
+fn commande_rejouer(fichier: &str, fenetre: bool) {
     tray::ouvrir_console();
+    if fenetre {
+        ui::demarrer(None); // avant le rejeu : la fenêtre suit les phases rejouées
+    }
     let (tx, rx) = mpsc::channel();
     if let Some(d) = ddragon::charger() {
         let _ = tx.send(evenement::Evenement::DonneesPretes(std::sync::Arc::new(d)));
     }
     rejeu::lancer(fichier, tx.clone());
     cerveau::boucle(rx, tx, cerveau::Mode::Rejeu);
+    if fenetre {
+        ui::ouvrir();
+        ui::attendre_fermeture(); // l'état final reste visible jusqu'à la fermeture
+    }
 }
 
 fn commande_cle(cle: &str) {

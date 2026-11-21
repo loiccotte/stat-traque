@@ -37,6 +37,9 @@ pub enum Evenement {
     /// Synchro de mon historique terminée (parties, stats perso, LP, récap éventuel).
     /// `Box` : le contenu est gros, l'événement reste petit dans le canal.
     Historique(Box<crate::historique::MajHistorique>),
+    /// La fenêtre principale vient de s'ouvrir ou de se fermer (voir ui/parent.rs) :
+    /// le cerveau relance ou arrête le suivi de partie (onglet Partie).
+    Fenetre,
     /// Demande d'arrêt (menu "Quitter" de l'icône).
     #[cfg_attr(not(windows), allow(dead_code))]
     Quitter,

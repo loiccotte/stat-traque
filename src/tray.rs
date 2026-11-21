@@ -2,14 +2,17 @@
 //!
 //! Écrite directement avec l'API Windows (pas de framework graphique) :
 //! coût quasi nul en RAM et en taille d'exe. Une fenêtre INVISIBLE reçoit
-//! les clics sur l'icône ; un clic affiche un petit menu (état + Quitter).
+//! les clics sur l'icône : clic gauche = ouvrir la fenêtre (ui/), clic droit =
+//! petit menu (état, Ouvrir, Overlay, Quitter). Pendant la partie seulement, le
+//! raccourci global Ctrl+Maj+Tab affiche / masque l'overlay. L'overlay lui-même
+//! (fenêtre native GDI, ui/overlay_natif.rs) vit aussi dans ce thread.
 //!
 //! Hors Windows (développement sous Linux) : fonctions vides.
 
 #[cfg(windows)]
 mod windows_impl {
     use std::ptr::null_mut;
-    use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
     use std::sync::mpsc::Sender;
     use std::sync::{Mutex, OnceLock};
 
@@ -24,7 +27,14 @@ mod windows_impl {
 
     const MSG_ICONE: u32 = WM_APP + 1; // clic sur l'icône
     const MSG_ETAT: u32 = WM_APP + 2; // l'état a changé -> mettre à jour l'infobulle
+    const MSG_RACCOURCI: u32 = WM_APP + 3; // (dés)activer le raccourci de l'overlay
+    const MSG_OVERLAY: u32 = WM_APP + 4; // afficher (wparam = 1) / masquer l'overlay
+    const MSG_OVERLAY_MAJ: u32 = WM_APP + 5; // l'état a changé : redessiner l'overlay
     const ID_QUITTER: usize = 1;
+    const ID_OUVRIR: usize = 2;
+    const ID_OVERLAY: usize = 3;
+    /// Identifiant de notre raccourci clavier global (choisi librement).
+    const ID_RACCOURCI: i32 = 1;
 
     static FENETRE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
     static ETAT: Mutex<String> = Mutex::new(String::new());
@@ -32,6 +42,9 @@ mod windows_impl {
     /// Message envoyé par Windows quand la barre des tâches est recréée
     /// (redémarrage de l'Explorateur) : il faut alors remettre l'icône.
     static MSG_BARRE_RECREEE: AtomicU32 = AtomicU32::new(0);
+    /// Un redessin de l'overlay est déjà demandé (message posté, pas encore traité) :
+    /// pendant une rafale de changements, on ne poste qu'UN message.
+    static REDESSIN_EN_ATTENTE: AtomicBool = AtomicBool::new(false);
 
     /// Texte Rust -> texte Windows (UTF-16 terminé par un zéro).
     fn utf16(s: &str) -> Vec<u16> {
@@ -81,8 +94,31 @@ mod windows_impl {
             return 0;
         }
         match msg {
-            MSG_ICONE if matches!(lparam as u32, WM_LBUTTONUP | WM_RBUTTONUP) => {
+            MSG_ICONE if lparam as u32 == WM_LBUTTONUP => {
+                crate::ui::ouvrir();
+                0
+            }
+            MSG_ICONE if lparam as u32 == WM_RBUTTONUP => {
                 afficher_menu(fenetre);
+                0
+            }
+            MSG_RACCOURCI => {
+                activer_raccourci(fenetre, wparam != 0);
+                0
+            }
+            MSG_OVERLAY => {
+                crate::ui::overlay_natif::afficher(wparam != 0);
+                0
+            }
+            MSG_OVERLAY_MAJ => {
+                // Remis à faux AVANT de lire l'état : un changement arrivé pendant le
+                // redessin postera un nouveau message (rien n'est perdu).
+                REDESSIN_EN_ATTENTE.store(false, Ordering::Release);
+                crate::ui::overlay_natif::redessiner();
+                0
+            }
+            WM_HOTKEY if wparam as i32 == ID_RACCOURCI => {
+                crate::ui::basculer_overlay();
                 0
             }
             MSG_ETAT => {
@@ -99,7 +135,15 @@ mod windows_impl {
         let menu = CreatePopupMenu();
         let etat = utf16(&ETAT.lock().unwrap());
         let quitter = utf16("Quitter");
+        let ouvrir = utf16("Ouvrir stat-traque");
+        let overlay = utf16("Afficher / masquer l'overlay\tCtrl+Maj+Tab");
         AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, etat.as_ptr());
+        AppendMenuW(menu, MF_SEPARATOR, 0, null_mut());
+        AppendMenuW(menu, MF_STRING, ID_OUVRIR, ouvrir.as_ptr());
+        SetMenuDefaultItem(menu, ID_OUVRIR as u32, 0); // en gras : c'est le clic gauche
+        // L'overlay n'a de sens que pendant la partie : grisé sinon.
+        let en_partie = crate::affichage::phase().is_some_and(crate::gameflow::Phase::en_partie);
+        AppendMenuW(menu, if en_partie { MF_STRING } else { MF_STRING | MF_GRAYED }, ID_OVERLAY, overlay.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, null_mut());
         AppendMenuW(menu, MF_STRING, ID_QUITTER, quitter.as_ptr());
         let mut p = POINT { x: 0, y: 0 };
@@ -109,12 +153,18 @@ mod windows_impl {
         DestroyMenu(menu);
         // Recommandé par Microsoft après TrackPopupMenu (sinon le 2e clic peut être ignoré).
         PostMessageW(fenetre, WM_NULL, 0, 0);
-        if choix as usize == ID_QUITTER {
-            if let Some(tx) = TX.get() {
-                let _ = tx.send(Evenement::Quitter);
+        match choix as usize {
+            ID_OUVRIR => crate::ui::ouvrir(),
+            ID_OVERLAY => crate::ui::basculer_overlay(),
+            ID_QUITTER => {
+                if let Some(tx) = TX.get() {
+                    let _ = tx.send(Evenement::Quitter);
+                }
+                crate::ui::overlay_natif::afficher(false);
+                Shell_NotifyIconW(NIM_DELETE, &donnees_icone(fenetre));
+                PostQuitMessage(0); // main.rs ferme ensuite la fenêtre (processus enfant)
             }
-            Shell_NotifyIconW(NIM_DELETE, &donnees_icone(fenetre));
-            PostQuitMessage(0);
+            _ => {}
         }
     }
 
@@ -122,6 +172,13 @@ mod windows_impl {
     pub fn lancer(tx: Sender<Evenement>) {
         let _ = TX.set(tx);
         unsafe {
+            // Écrans à 125 % / 150 % : on dessine nous-mêmes à la bonne taille (texte net)
+            // au lieu de laisser Windows agrandir une image floue. (L'overlay adapte ses
+            // tailles à l'écran ; la fenêtre egui est un autre processus, déjà adaptée.)
+            use windows_sys::Win32::UI::HiDpi::{
+                SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            };
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             let instance = GetModuleHandleW(null_mut());
             let classe = utf16("stat-traque");
             let wc = WNDCLASSW {
@@ -139,6 +196,11 @@ mod windows_impl {
                 null_mut(), null_mut(), instance, null_mut(),
             );
             FENETRE.store(fenetre, Ordering::Release);
+            // Lancé pendant une partie ? Le raccourci doit marcher tout de suite
+            // (le changement de phase a pu arriver avant que cette fenêtre existe).
+            if crate::affichage::phase().is_some_and(crate::gameflow::Phase::en_partie) {
+                activer_raccourci(fenetre, true);
+            }
 
             ajouter_icone(fenetre);
 
@@ -147,6 +209,53 @@ mod windows_impl {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
+        }
+    }
+
+    /// Enregistre / retire le raccourci global Ctrl+Maj+Tab. Doit se faire dans le
+    /// thread de l'icône (Windows envoie WM_HOTKEY à la fenêtre qui l'a enregistré).
+    unsafe fn activer_raccourci(fenetre: HWND, actif: bool) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            RegisterHotKey, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, VK_TAB,
+        };
+        if actif {
+            // Échec possible si une autre application a déjà pris ce raccourci :
+            // le menu de l'icône permet toujours d'afficher l'overlay.
+            let ok = RegisterHotKey(fenetre, ID_RACCOURCI, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_TAB as u32);
+            if ok == 0 {
+                crate::log!("Raccourci Ctrl+Maj+Tab déjà pris par une autre application : overlay par le menu de l'icône.");
+            }
+        } else {
+            UnregisterHotKey(fenetre, ID_RACCOURCI);
+        }
+    }
+
+    /// Active le raccourci de l'overlay (pendant la partie) ou le libère.
+    /// Peut être appelée depuis n'importe quel thread (ne fait que poster un message).
+    pub fn raccourci_overlay(actif: bool) {
+        let fenetre = FENETRE.load(Ordering::Acquire);
+        if !fenetre.is_null() {
+            unsafe { PostMessageW(fenetre, MSG_RACCOURCI, actif as usize, 0) };
+        }
+    }
+
+    /// Affiche / masque l'overlay natif. N'importe quel thread : on poste un message,
+    /// l'overlay est créé / détruit dans le thread de l'icône.
+    pub fn afficher_overlay(visible: bool) {
+        poster(MSG_OVERLAY, visible as usize);
+    }
+
+    /// Redessine l'overlay (s'il est affiché). N'importe quel thread.
+    pub fn redessiner_overlay() {
+        if !REDESSIN_EN_ATTENTE.swap(true, Ordering::AcqRel) {
+            poster(MSG_OVERLAY_MAJ, 0);
+        }
+    }
+
+    fn poster(msg: u32, wparam: usize) {
+        let fenetre = FENETRE.load(Ordering::Acquire);
+        if !fenetre.is_null() {
+            unsafe { PostMessageW(fenetre, msg, wparam, 0) };
         }
     }
 
@@ -202,13 +311,19 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::{definir_etat, instance_unique, lancer, nouvelle_console, ouvrir_console, sans_boites_erreur_disque};
+pub use windows_impl::{
+    afficher_overlay, definir_etat, instance_unique, lancer, nouvelle_console, ouvrir_console, raccourci_overlay,
+    redessiner_overlay, sans_boites_erreur_disque,
+};
 
 #[cfg(not(windows))]
 pub fn definir_etat(_texte: &str) {}
 
 #[cfg(not(windows))]
 pub fn ouvrir_console() {}
+
+#[cfg(not(windows))]
+pub fn raccourci_overlay(_actif: bool) {}
 
 #[cfg(not(windows))]
 pub fn nouvelle_console() {}

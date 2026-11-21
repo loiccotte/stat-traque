@@ -17,18 +17,22 @@
 //   http.rs        clients HTTP partagés
 //   tray.rs        icône Windows
 //   journal.rs     messages (console + fichier)
+//   enregistreur.rs  enregistre les sessions (anonymisées) pour les rejouer
+//   rejeu.rs       rejoue un enregistrement sans LoL
 //
 // Rappel Rust : `Option<T>` = une valeur OU rien ; `Result<T, E>` = réussite OU erreur ;
 // `?` = "si ça a raté, on s'arrête et on renvoie l'erreur".
 
 mod cerveau;
 mod ddragon;
+mod enregistreur;
 mod evenement;
 mod gameflow;
 mod http;
 mod journal;
 mod lcu;
 mod live;
+mod rejeu;
 mod riot_api;
 mod stockage;
 mod tray;
@@ -42,6 +46,7 @@ const AIDE: &str = "stat-traque — alternative légère à Blitz
   stat-traque --console          lance l'app dans une console à part (Ctrl+C pour arrêter)
   stat-traque cle RGAPI-xxxx     enregistre ta clé API Riot (stockée en local)
   stat-traque region euw1        change de serveur (euw1, eun1, na1, kr...)
+  stat-traque --rejouer f.jsonl  rejoue une session enregistrée (sans LoL)
   stat-traque aide               affiche cette aide";
 
 fn main() {
@@ -53,6 +58,7 @@ fn main() {
     match args.as_slice() {
         ["cle", cle] => return commande_cle(cle),
         ["region", r] => return commande_region(r),
+        ["--rejouer", fichier] => return commande_rejouer(fichier),
         ["aide" | "--help" | "-h", ..] => {
             tray::ouvrir_console();
             println!("{AIDE}");
@@ -79,6 +85,7 @@ fn main() {
     log!("stat-traque {} — démarrage", env!("CARGO_PKG_VERSION"));
 
     // Un canal = une file de messages. Les threads envoient (`tx`), le cerveau reçoit (`rx`).
+    enregistreur::demarrer(&stockage::Reglages::charger());
     let (tx, rx) = mpsc::channel();
     ddragon::charger_en_fond(tx.clone());
     lcu::evenements::lancer(tx.clone());
@@ -86,16 +93,27 @@ fn main() {
 
     log!("Prêt en {} ms.", debut.elapsed().as_millis());
     if console {
-        cerveau::boucle(rx, tx, true);
+        cerveau::boucle(rx, tx, cerveau::Mode::Console);
     } else {
         // Windows : la fenêtre de l'icône doit tourner sur le thread principal.
         let tx_cerveau = tx.clone();
         std::thread::Builder::new()
             .name("cerveau".into())
-            .spawn(move || cerveau::boucle(rx, tx_cerveau, false))
+            .spawn(move || cerveau::boucle(rx, tx_cerveau, cerveau::Mode::Tray))
             .expect("impossible de lancer le cerveau");
         tray::lancer(tx); // revient quand on clique sur "Quitter"
     }
+}
+
+/// Rejoue un enregistrement dans la console, avec les données du patch en cache.
+fn commande_rejouer(fichier: &str) {
+    tray::ouvrir_console();
+    let (tx, rx) = mpsc::channel();
+    if let Some(d) = ddragon::charger() {
+        let _ = tx.send(evenement::Evenement::DonneesPretes(std::sync::Arc::new(d)));
+    }
+    rejeu::lancer(fichier, tx.clone());
+    cerveau::boucle(rx, tx, cerveau::Mode::Rejeu);
 }
 
 fn commande_cle(cle: &str) {

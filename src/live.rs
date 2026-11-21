@@ -145,7 +145,12 @@ fn lire(chemin: &str) -> Option<Value> {
 }
 
 fn lire_partie() -> Option<InstantanePartie> {
-    InstantanePartie::depuis_json(&lire("playerlist")?, &lire("gamestats")?)
+    let joueurs = lire("playerlist")?;
+    let stats = lire("gamestats")?;
+    if crate::enregistreur::actif() {
+        crate::enregistreur::noter(serde_json::json!({"src": "live", "joueurs": joueurs, "stats": stats}));
+    }
+    InstantanePartie::depuis_json(&joueurs, &stats)
 }
 
 #[cfg(test)]

@@ -29,6 +29,12 @@ stat-traque region euw1            # change de serveur (euw1, eun1, na1, kr...)
 ```
 Tout est rangé dans `%APPDATA%\stat-traque\` : clé, réglages, cache, journal de la dernière session.
 
+### Tester sans effort
+L'app enregistre chaque session (pseudos anonymisés, 5 sessions max) dans
+`%APPDATA%\stat-traque\enregistrements\`. Joue normalement, puis de temps en temps :
+`powershell -File scripts\envoyer.ps1` (copie + commit + push). Les sessions envoyées
+sont rejouées par `cargo test`. Désactiver : `enregistrer=non` dans `reglages.txt`.
+
 Développement : `cargo build --release`, puis `powershell -File scripts\mesure.ps1` pour
 vérifier les budgets de performance (taille, RAM, CPU, démarrage).
 La clé n'est jamais incluse dans le programme ni dans ce dépôt.

@@ -127,6 +127,12 @@ fn ouvrir_websocket(lcu: &Lcu) -> Result<Socket, Box<dyn std::error::Error>> {
     Ok(socket)
 }
 
+fn noter_get(uri: &str, data: &Value) {
+    if crate::enregistreur::actif() {
+        crate::enregistreur::noter(serde_json::json!({"src": "get", "uri": uri, "data": data}));
+    }
+}
+
 /// Clé de déduplication du champ select : (champion, rôle).
 type CleChampSelect = (u16, Option<Box<str>>);
 
@@ -135,13 +141,16 @@ type CleChampSelect = (u16, Option<Box<str>>);
 fn etat_initial(lcu: &Lcu, tx: &Sender<Evenement>) -> Option<CleChampSelect> {
     let phase = lcu
         .get("/lol-gameflow/v1/gameflow-phase")
+        .inspect(|v| noter_get("/lol-gameflow/v1/gameflow-phase", v))
         .and_then(|v| v.as_str().map(Phase::depuis_texte))
         .unwrap_or(Phase::Aucune);
     let _ = tx.send(Evenement::Phase(phase));
     if phase != Phase::ChampSelect {
         return None;
     }
-    let ev = lcu.get("/lol-champ-select/v1/session").as_ref().and_then(lire_champ_select)?;
+    let session = lcu.get("/lol-champ-select/v1/session")?;
+    noter_get("/lol-champ-select/v1/session", &session);
+    let ev = lire_champ_select(&session)?;
     let cle = match &ev {
         Evenement::ChampSelect { champion, role } => (*champion, role.clone()),
         _ => return None,
@@ -150,11 +159,34 @@ fn etat_initial(lcu: &Lcu, tx: &Sender<Evenement>) -> Option<CleChampSelect> {
     Some(cle)
 }
 
+/// Le client renvoie la session de champ select à CHAQUE petit changement
+/// (timer, survol d'un allié...) : on ne transmet que si MON choix change.
+/// Partagé par l'écoute en direct et par le rejeu des enregistrements.
+#[derive(Default)]
+pub struct Filtre {
+    dernier_champ_select: Option<CleChampSelect>,
+}
+
+impl Filtre {
+    pub fn filtrer(&mut self, ev: Evenement) -> Option<Evenement> {
+        match &ev {
+            Evenement::ChampSelect { champion, role } => {
+                let cle = (*champion, role.clone());
+                if self.dernier_champ_select.as_ref() == Some(&cle) {
+                    return None;
+                }
+                self.dernier_champ_select = Some(cle);
+            }
+            Evenement::Phase(_) => self.dernier_champ_select = None,
+            _ => {}
+        }
+        Some(ev)
+    }
+}
+
 /// Lit les messages jusqu'à la fermeture du client. Bloquant : dort entre deux messages.
 fn ecouter(mut socket: Socket, tx: &Sender<Evenement>, deja_envoye: Option<CleChampSelect>) {
-    // Le client renvoie la session de champ select à CHAQUE petit changement
-    // (timer, survol d'un allié...) : on ne transmet que si MON choix change.
-    let mut dernier_champ_select = deja_envoye;
+    let mut filtre = Filtre { dernier_champ_select: deja_envoye };
     loop {
         let message = match socket.read() {
             Ok(m) => m,
@@ -170,17 +202,12 @@ fn ecouter(mut socket: Socket, tx: &Sender<Evenement>, deja_envoye: Option<CleCh
             }
         };
         let Message::Text(texte) = message else { continue };
-        if let Some(ev) = traduire(&texte) {
-            if let Evenement::ChampSelect { champion, role } = &ev {
-                let cle = (*champion, role.clone());
-                if dernier_champ_select.as_ref() == Some(&cle) {
-                    continue;
-                }
-                dernier_champ_select = Some(cle);
-            }
-            if matches!(ev, Evenement::Phase(_)) {
-                dernier_champ_select = None;
-            }
+        // Le texte n'est décodé qu'UNE fois, pour l'enregistreur et pour la traduction.
+        let Ok(valeur) = serde_json::from_str::<Value>(&texte) else { continue };
+        if crate::enregistreur::actif() {
+            crate::enregistreur::noter(serde_json::json!({"src": "ws", "msg": valeur}));
+        }
+        if let Some(ev) = traduire(&valeur).and_then(|ev| filtre.filtrer(ev)) {
             if tx.send(ev).is_err() {
                 return;
             }
@@ -188,9 +215,9 @@ fn ecouter(mut socket: Socket, tx: &Sender<Evenement>, deja_envoye: Option<CleCh
     }
 }
 
-/// Transforme un message WAMP en événement (ou rien). Fonction pure : facile à tester.
-pub fn traduire(texte: &str) -> Option<Evenement> {
-    let v: Value = serde_json::from_str(texte).ok()?;
+/// Transforme un message WAMP (déjà décodé) en événement, ou rien.
+/// Fonction pure : facile à tester.
+pub fn traduire(v: &Value) -> Option<Evenement> {
     if v[0].as_i64() != Some(8) {
         return None;
     }
@@ -211,7 +238,7 @@ pub fn traduire(texte: &str) -> Option<Evenement> {
 
 /// Dans la session de champ select, retrouve MA ligne (`localPlayerCellId`).
 /// `championId` = verrouillé ; `championPickIntent` = survolé (pas encore verrouillé).
-fn lire_champ_select(session: &Value) -> Option<Evenement> {
+pub fn lire_champ_select(session: &Value) -> Option<Evenement> {
     let ma_case = session["localPlayerCellId"].as_i64()?;
     let moi = session["myTeam"].as_array()?.iter().find(|j| j["cellId"].as_i64() == Some(ma_case))?;
     let champion = match moi["championId"].as_u64() {
@@ -226,10 +253,14 @@ fn lire_champ_select(session: &Value) -> Option<Evenement> {
 mod tests {
     use super::*;
 
+    fn v(texte: &str) -> Value {
+        serde_json::from_str(texte).unwrap()
+    }
+
     #[test]
     fn traduit_un_changement_de_phase() {
         let msg = r#"[8,"OnJsonApiEvent",{"data":"ChampSelect","eventType":"Update","uri":"/lol-gameflow/v1/gameflow-phase"}]"#;
-        assert!(matches!(traduire(msg), Some(Evenement::Phase(Phase::ChampSelect))));
+        assert!(matches!(traduire(&v(msg)), Some(Evenement::Phase(Phase::ChampSelect))));
     }
 
     #[test]
@@ -238,7 +269,7 @@ mod tests {
             "data":{"localPlayerCellId":2,"myTeam":[
               {"cellId":1,"championId":64,"championPickIntent":0,"assignedPosition":"jungle"},
               {"cellId":2,"championId":0,"championPickIntent":238,"assignedPosition":"middle"}]}}]"#;
-        match traduire(survole) {
+        match traduire(&v(survole)) {
             Some(Evenement::ChampSelect { champion, role }) => {
                 assert_eq!(champion, 238);
                 assert_eq!(role.as_deref(), Some("middle"));
@@ -246,15 +277,14 @@ mod tests {
             autre => panic!("inattendu : {autre:?}"),
         }
         let verrouille = survole.replace(r#""championId":0,"championPickIntent":238"#, r#""championId":157,"championPickIntent":0"#);
-        assert!(matches!(traduire(&verrouille), Some(Evenement::ChampSelect { champion: 157, .. })));
+        assert!(matches!(traduire(&v(&verrouille)), Some(Evenement::ChampSelect { champion: 157, .. })));
     }
 
     #[test]
     fn ignore_le_reste() {
-        assert!(traduire("[8,\"x\",{\"uri\":\"/autre\",\"data\":1}]").is_none());
-        assert!(traduire("[0,\"bienvenue\"]").is_none());
-        assert!(traduire("pas du json").is_none());
+        assert!(traduire(&v("[8,\"x\",{\"uri\":\"/autre\",\"data\":1}]")).is_none());
+        assert!(traduire(&v("[0,\"bienvenue\"]")).is_none());
         let fin = r#"[8,"x",{"eventType":"Delete","uri":"/lol-champ-select/v1/session","data":null}]"#;
-        assert!(traduire(fin).is_none());
+        assert!(traduire(&v(fin)).is_none());
     }
 }

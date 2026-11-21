@@ -12,6 +12,17 @@ use crate::gameflow::Phase;
 use crate::live::{self, InstantanePartie, SuiviPartie};
 use crate::log;
 
+/// Comment l'app tourne.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Icône dans la barre des tâches (normal).
+    Tray,
+    /// Messages et tableau de la partie dans une console.
+    Console,
+    /// Rejeu d'un enregistrement : console, mais on n'interroge pas le vrai jeu.
+    Rejeu,
+}
+
 struct Etat {
     phase: Phase,
     donnees: Option<Arc<DonneesJeu>>,
@@ -19,12 +30,11 @@ struct Etat {
     champion_en_attente: Option<(u16, Option<Box<str>>)>,
     /// Existe seulement pendant une partie (le lâcher arrête le thread).
     suivi: Option<SuiviPartie>,
-    /// En mode console on affiche le tableau des joueurs.
-    console: bool,
+    mode: Mode,
 }
 
-pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, console: bool) {
-    let mut etat = Etat { phase: Phase::Aucune, donnees: None, champion_en_attente: None, suivi: None, console };
+pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
+    let mut etat = Etat { phase: Phase::Aucune, donnees: None, champion_en_attente: None, suivi: None, mode };
     crate::tray::definir_etat("En attente du client LoL");
     // `recv()` bloque sans consommer de CPU jusqu'au prochain événement.
     while let Ok(ev) = rx.recv() {
@@ -52,7 +62,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, console: bool) {
                 etat.donnees = Some(d);
             }
             Evenement::Partie(p) => {
-                if etat.console {
+                if etat.mode != Mode::Tray {
                     afficher_partie(&p);
                 }
             }
@@ -68,8 +78,10 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     log!("Phase : {}", p.libelle());
     crate::tray::definir_etat(p.libelle());
     // Le suivi de partie (port 2999) ne tourne QUE pendant la partie, et seulement
-    // si quelqu'un affiche le résultat (console aujourd'hui, overlay plus tard).
-    let besoin = p.en_partie() && etat.console;
+    // si quelqu'un s'en sert : la console, l'enregistreur (overlay plus tard).
+    // En rejeu, les instantanés viennent du fichier, pas du jeu.
+    let utile = etat.mode == Mode::Console || (etat.mode == Mode::Tray && crate::enregistreur::actif());
+    let besoin = p.en_partie() && utile;
     let vivant = etat.suivi.as_ref().is_some_and(SuiviPartie::vivant);
     match (besoin, vivant) {
         (true, false) => etat.suivi = Some(live::suivre(tx.clone())),

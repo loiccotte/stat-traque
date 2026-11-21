@@ -1,0 +1,8 @@
+{"data":"Lobby","src":"get","t":249,"uri":"/lol-gameflow/v1/gameflow-phase"}
+{"msg":[8,"OnJsonApiEvent",{"data":"ChampSelect","eventType":"Update","uri":"/lol-gameflow/v1/gameflow-phase"}],"src":"ws","t":633}
+{"msg":[8,"OnJsonApiEvent",{"data":{"localPlayerCellId":2,"myTeam":[{"assignedPosition":"middle","cellId":2,"championId":0,"championPickIntent":238}],"timer":{}},"eventType":"Update","uri":"/lol-champ-select/v1/session"}],"src":"ws","t":1033}
+{"msg":[8,"OnJsonApiEvent",{"data":{"localPlayerCellId":2,"myTeam":[{"assignedPosition":"middle","cellId":2,"championId":0,"championPickIntent":238}],"timer":{}},"eventType":"Update","uri":"/lol-champ-select/v1/session"}],"src":"ws","t":1434}
+{"msg":[8,"OnJsonApiEvent",{"data":{"localPlayerCellId":2,"myTeam":[{"assignedPosition":"middle","cellId":2,"championId":0,"championPickIntent":238}],"timer":{}},"eventType":"Update","uri":"/lol-champ-select/v1/session"}],"src":"ws","t":1834}
+{"msg":[8,"OnJsonApiEvent",{"data":{"localPlayerCellId":2,"myTeam":[{"assignedPosition":"middle","cellId":2,"championId":157,"championPickIntent":0}],"timer":{}},"eventType":"Update","uri":"/lol-champ-select/v1/session"}],"src":"ws","t":2234}
+{"msg":[8,"OnJsonApiEvent",{"data":"InProgress","eventType":"Update","uri":"/lol-gameflow/v1/gameflow-phase"}],"src":"ws","t":2635}
+{"msg":[8,"OnJsonApiEvent",{"data":"EndOfGame","eventType":"Update","uri":"/lol-gameflow/v1/gameflow-phase"}],"src":"ws","t":3035}

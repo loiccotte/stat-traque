@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::affichage::{EtatAffichage, VueTierList};
+use crate::affichage::{EtatAffichage, VueFiche, VueTierList};
 use crate::historique::{ProgressionLp, ResumePartie, StatsPerso};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -30,6 +30,8 @@ pub struct Gros {
     pub historique: Arc<Vec<ResumePartie>>,
     pub stats_perso: Option<Arc<StatsPerso>>,
     pub progression_lp: Option<Arc<ProgressionLp>>,
+    /// Fiche joueur (fiche.rs).
+    pub fiche: Option<Arc<VueFiche>>,
 }
 
 impl Gros {
@@ -39,6 +41,7 @@ impl Gros {
             historique: e.historique.clone(),
             stats_perso: e.stats_perso.clone(),
             progression_lp: e.progression_lp.clone(),
+            fiche: e.fiche.clone(),
         }
     }
 
@@ -56,6 +59,7 @@ impl Gros {
             && Arc::ptr_eq(&self.historique, &autre.historique)
             && meme(&self.stats_perso, &autre.stats_perso)
             && meme(&self.progression_lp, &autre.progression_lp)
+            && meme(&self.fiche, &autre.fiche)
     }
 }
 
@@ -119,6 +123,7 @@ pub fn appliquer_message(etat: &mut EtatAffichage, message: Message) -> Option<M
             nouveau.historique = std::mem::take(&mut etat.historique);
             nouveau.stats_perso = etat.stats_perso.take();
             nouveau.progression_lp = etat.progression_lp.take();
+            nouveau.fiche = etat.fiche.take();
             *etat = nouveau;
             None
         }
@@ -127,6 +132,7 @@ pub fn appliquer_message(etat: &mut EtatAffichage, message: Message) -> Option<M
             etat.historique = g.historique;
             etat.stats_perso = g.stats_perso;
             etat.progression_lp = g.progression_lp;
+            etat.fiche = g.fiche;
             None
         }
         autre => Some(autre),

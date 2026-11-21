@@ -14,6 +14,7 @@
 pub mod cache;
 pub mod limiteur;
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -70,6 +71,26 @@ static REQUETES_RESEAU: AtomicU64 = AtomicU64::new(0);
 /// Réponses servies par le cache disque (0 requête).
 static REPONSES_CACHE: AtomicU64 = AtomicU64::new(0);
 
+// Les mêmes compteurs, mais PAR FIL (thread) : une opération qui fait ses requêtes
+// sur ses propres fils (ex. la fiche d'un joueur) mesure ainsi SON coût exact, même
+// si d'autres requêtes partent en même temps ailleurs (synchro, rangs...).
+thread_local! {
+    static FIL_RESEAU: Cell<u64> = const { Cell::new(0) };
+    static FIL_CACHE: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Compte une requête envoyée (global + fil courant).
+fn compter_reseau() {
+    REQUETES_RESEAU.fetch_add(1, Ordering::Relaxed);
+    FIL_RESEAU.with(|c| c.set(c.get() + 1));
+}
+
+/// Compte une réponse du cache (global + fil courant).
+fn compter_cache() {
+    REPONSES_CACHE.fetch_add(1, Ordering::Relaxed);
+    FIL_CACHE.with(|c| c.set(c.get() + 1));
+}
+
 /// Instantané des compteurs : on en prend un avant une opération, puis
 /// `Compteurs::depuis(avant)` donne ce que l'opération a coûté.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -88,6 +109,23 @@ impl Compteurs {
     pub fn depuis(avant: Self) -> Self {
         let n = Self::maintenant();
         Self { reseau: n.reseau.saturating_sub(avant.reseau), cache: n.cache.saturating_sub(avant.cache) }
+    }
+
+    /// Compteurs du FIL courant seulement (voir `FIL_RESEAU`) : exacts pour une
+    /// opération qui tourne sur ses propres fils.
+    pub fn du_fil() -> Self {
+        Self { reseau: FIL_RESEAU.with(Cell::get), cache: FIL_CACHE.with(Cell::get) }
+    }
+
+    /// Ce que le fil courant a consommé depuis `avant` (pris avec `du_fil`).
+    pub fn du_fil_depuis(avant: Self) -> Self {
+        let n = Self::du_fil();
+        Self { reseau: n.reseau.saturating_sub(avant.reseau), cache: n.cache.saturating_sub(avant.cache) }
+    }
+
+    /// Somme de deux mesures.
+    pub fn plus(self, autre: Self) -> Self {
+        Self { reseau: self.reseau + autre.reseau, cache: self.cache + autre.cache }
     }
 }
 
@@ -128,7 +166,7 @@ impl RiotApi {
         if let Some(texte) = self.cache.lire(&url).filter(|_| lire_cache) {
             match serde_json::from_str(&texte) {
                 Ok(v) => {
-                    REPONSES_CACHE.fetch_add(1, Ordering::Relaxed);
+                    compter_cache();
                     return Ok(v);
                 }
                 Err(_) => self.cache.oublier(&url), // fichier abîmé : on redemande à Riot
@@ -138,7 +176,7 @@ impl RiotApi {
         // 2 essais maximum : le 2e seulement si Riot a répondu 429 (trop de requêtes).
         for _ in 0..2 {
             self.limiteur.attendre();
-            REQUETES_RESEAU.fetch_add(1, Ordering::Relaxed);
+            compter_reseau();
             match crate::http::internet().get(&url).set("X-Riot-Token", cle).call() {
                 Ok(rep) => {
                     let texte = rep.into_string().map_err(|_| ErreurApi::Reseau)?;
@@ -209,6 +247,14 @@ impl RiotApi {
     /// `ligue` = "challengerleagues", "grandmasterleagues" ou "masterleagues".
     pub fn ligue_haut_niveau(&self, ligue: &str) -> Result<Value, ErreurApi> {
         let chemin = format!("/lol/league/v4/{ligue}/by-queue/RANKED_SOLO_5x5");
+        self.requete(&self.plateforme, &chemin, Duree::Pendant(Duration::from_secs(3600)))
+    }
+
+    /// Une page (205 joueurs au plus) d'un palier / d'une division en solo/duo, pour
+    /// échantillonner les paliers sous Master (références de la fiche joueur).
+    /// `palier` = "GOLD"..., `division` = "I" à "IV", `page` à partir de 1. Cache 1 h.
+    pub fn entrees_ligue(&self, palier: &str, division: &str, page: u32) -> Result<Value, ErreurApi> {
+        let chemin = format!("/lol/league/v4/entries/RANKED_SOLO_5x5/{palier}/{division}?page={}", page.max(1));
         self.requete(&self.plateforme, &chemin, Duree::Pendant(Duration::from_secs(3600)))
     }
 

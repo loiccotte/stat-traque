@@ -37,6 +37,13 @@ pub enum Evenement {
     /// Synchro de mon historique terminée (parties, stats perso, LP, récap éventuel).
     /// `Box` : le contenu est gros, l'événement reste petit dans le canal.
     Historique(Box<crate::historique::MajHistorique>),
+    /// L'interface demande la fiche d'un joueur (F44). Acceptée seulement pour moi ou
+    /// un joueur de ma partie en cours connu par spectator (voir `fiche::autoriser`).
+    /// Envoyée par l'interface (feature/interface) : pas encore construite ailleurs.
+    #[allow(dead_code)]
+    DemandeFiche { puuid: Box<str> },
+    /// Fiche calculée (fiche.rs). `Box` : contenu gros, l'événement reste petit.
+    Fiche(Box<crate::fiche::Fiche>),
     /// La fenêtre principale vient de s'ouvrir ou de se fermer (voir ui/parent.rs) :
     /// le cerveau relance ou arrête le suivi de partie (onglet Partie).
     Fenetre,

@@ -14,6 +14,8 @@
 //   ddragon.rs     données du patch, en cache sur le disque
 //   riot_api/      API Riot : limiteur de débit + cache
 //   historique.rs  mes parties, stats perso, LP, récap (base locale TSV)
+//   metriques.rs   métriques détaillées des parties, références par palier et rôle
+//   fiche.rs       fiche joueur (radar, MMR estimé, style) et textes Discord
 //   stockage.rs    dossier %APPDATA%\stat-traque (clé, réglages, cache)
 //   http.rs        clients HTTP partagés
 //   tray.rs        icône Windows
@@ -36,6 +38,7 @@ mod ddragon;
 mod demarrage;
 mod enregistreur;
 mod evenement;
+mod fiche;
 mod gameflow;
 mod historique;
 mod http;
@@ -43,6 +46,7 @@ mod journal;
 mod lcu;
 mod live;
 mod maj;
+mod metriques;
 mod rangs;
 mod rejeu;
 mod stats;
@@ -69,6 +73,8 @@ const AIDE: &str = "stat-traque — alternative légère à Blitz
   stat-traque collecter 30       collecte 30 min de parties Master+ (stats de runes)
   stat-traque tierlist [role]    tier list du patch (top, jungle, mid, adc, support)
   stat-traque historique         mes parties, stats perso et LP (base locale, hors ligne)
+  stat-traque fiche [Pseudo#TAG] fiche joueur : radar, MMR estimé, style (sans argument : moi)
+  stat-traque partager           récap de ma dernière partie, à coller sur Discord
   stat-traque demarrage oui      lance stat-traque avec Windows (non = arrêter)
   stat-traque aide               affiche cette aide";
 
@@ -99,6 +105,16 @@ fn main() {
         ["historique"] => {
             tray::ouvrir_console();
             return historique::commande();
+        }
+        ["fiche", reste @ ..] => {
+            tray::ouvrir_console();
+            // Un pseudo peut contenir des espaces : on recolle les morceaux.
+            let riot_id = reste.join(" ");
+            return fiche::commande(Some(riot_id.as_str()).filter(|r| !r.is_empty()));
+        }
+        ["partager"] => {
+            tray::ouvrir_console();
+            return fiche::commande_partager();
         }
         ["demarrage", choix] => return commande_demarrage(choix),
         ["collecter", minutes] => {

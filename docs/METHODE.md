@@ -59,8 +59,8 @@ Les agents sont définis dans `.claude/agents/` ; les règles communes dans `CLA
 | T26 | Fiches matchup OTP : format + import CSV / Google Sheet | dev-donnees | T04 | une fiche Zed importée |  |
 | T27 | Détection de l'adversaire de lane en champ select | dev-lcu | T09 | bon adversaire en draft |  |
 | T28 | Affichage de la fiche en champ select et overlay | dev-ui | T14, T26, T27 | affichée en < 100 ms |  |
-| T29 | Fiche joueur : radar, MMR estimé, spécificités (feature/fiche-joueur) | dev-riot-api | T19, T10 | moi : 0 requête ; autre joueur : ≤ 11 requêtes |  |
-| T30 | Récap partageable (texte Discord) | dev-riot-api | T20 | 1 clic pour copier |  |
+| T29 | Fiche joueur : radar, MMR estimé, spécificités (feature/fiche-joueur) | dev-riot-api | T19, T10 | moi : 0 requête ; autre joueur : ≤ 11 requêtes | 🟡 logique + console faites (`fiche.rs`, `metriques.rs`) ; écran = interface |
+| T30 | Récap partageable (texte Discord) | dev-riot-api | T20 | 1 clic pour copier | 🟡 texte fait (`stat-traque partager`, `recap_partage`) ; bouton « Copier » = interface |
 
 Parallélisable dès le départ après T01 : **T02, T03, T07, T08**.
 
@@ -92,7 +92,24 @@ La CI Windows (`.github/workflows/ci.yml`) relance `scripts/mesure.ps1` à chaqu
 Pistes plus tard : attendre le lockfile avec `FindFirstChangeNotificationW` (0 réveil),
 résumé compact des parties au lieu du JSON match-v5 brut (T19).
 
+## Fiche joueur (T29 / T30) : coûts mesurés
+| Opération | Requêtes Riot | Détail |
+|---|---|---|
+| Ma fiche (`stat-traque fiche`, ou `DemandeFiche` sur moi) | 0 | base locale (historique v2) |
+| Fiche d'un autre joueur | ≤ 11 | rang (cache 10 min) + ids classées (cache 10 min) + 9 parties (cache permanent) ; +1 avec un Riot ID tapé (account-v1, cache 24 h) |
+| Rattrapage des métriques (passage historique v1 -> v2) | ≤ 20, une seule fois | les 20 dernières parties de la Faille sans métriques, étalées (2,5 s) |
+| `stat-traque partager` | 0 | dernière partie de la base locale |
+| Collecte des références | budget de la collecte | moitié Master+ (runes + références), moitié répartie entre Fer → Diamant (league-v4 `entries/{palier}/{division}?page=N`, 3 parties / joueur, 10 joueurs comptés par partie) |
+
+Fichier de stats : lignes `R` (palier, rôle, mesure, n, somme, somme des carrés), au plus
+8 × 5 × 26 = 1 040 lignes (~50 Ko). Lues en flux, filtrées : le champ select ne les garde pas en RAM.
+Historique : ~200 octets par partie (au lieu de ~100) avec les 22 colonnes de métriques.
+Revue : challenge absent = inconnu (pas 0) ; compteurs par partie ramenés à 30 min ; encaissés / (morts + 1) ;
+MMR arrondi à 25 LP, confiance plafonnée à « moyenne » ; coût de la fiche mesuré par fil (ses requêtes seulement) ;
+ma fiche sans clé API ; mon Riot ID lu dans mes parties (0 requête) ; rattrapage après le rang, non bloquant.
+
 ## Décisions ouvertes
+
 - **T10 – source des builds** : les fiches OTP (T26) couvrent les builds par matchup pour les champions qui en ont.
   Pour les autres : Blitz agrège des millions de parties sur ses serveurs.
   Options : (a) agréger nous-mêmes via match-v5 sur des joueurs haut classement (lent, limité par la clé dev),

@@ -129,6 +129,11 @@ pub fn etat(phase: Phase) -> EtatAffichage {
         stats_perso: Some(Arc::new(historique.stats())),
         progression_lp: Some(Arc::new(progression())),
         recap: Some(Recap::calculer(&historique, &historique.parties[0])),
+        // Fiche joueur : vide dans la démo (l'onglet Fiche viendra avec l'interface).
+        fiche: None,
+        fiche_en_cours: false,
+        recap_partage: None,
+        cibles_fiche: Vec::new(),
     }
 }
 
@@ -179,6 +184,7 @@ fn historique() -> Historique {
             or: 11_000 + i * 300,
             patch: "15.1".into(),
             lp: (i % 4 != 3).then_some(if i % 3 != 1 { 21 } else { -18 }),
+            metriques: None,
         });
     }
     h

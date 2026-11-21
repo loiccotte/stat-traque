@@ -16,6 +16,8 @@
 //   stockage.rs    dossier %APPDATA%\stat-traque (clé, réglages, cache)
 //   http.rs        clients HTTP partagés
 //   tray.rs        icône Windows
+//   demarrage.rs   lancement avec Windows (registre)
+//   maj.rs         mise à jour automatique (releases GitHub)
 //   journal.rs     messages (console + fichier)
 //   enregistreur.rs  enregistre les sessions (anonymisées) pour les rejouer
 //   rejeu.rs       rejoue un enregistrement sans LoL
@@ -29,6 +31,7 @@ mod champselect;
 mod collecte;
 mod compo;
 mod ddragon;
+mod demarrage;
 mod enregistreur;
 mod evenement;
 mod gameflow;
@@ -36,6 +39,7 @@ mod http;
 mod journal;
 mod lcu;
 mod live;
+mod maj;
 mod rangs;
 mod rejeu;
 mod stats;
@@ -54,6 +58,7 @@ const AIDE: &str = "stat-traque — alternative légère à Blitz
   stat-traque region euw1        change de serveur (euw1, eun1, na1, kr...)
   stat-traque --rejouer f.jsonl  rejoue une session enregistrée (sans LoL)
   stat-traque collecter 30       collecte 30 min de parties Master+ (stats de runes)
+  stat-traque demarrage oui      lance stat-traque avec Windows (non = arrêter)
   stat-traque aide               affiche cette aide";
 
 fn main() {
@@ -65,6 +70,7 @@ fn main() {
     match args.as_slice() {
         ["cle", cle] => return commande_cle(cle),
         ["region", r] => return commande_region(r),
+        ["demarrage", choix] => return commande_demarrage(choix),
         ["--rejouer", fichier] => return commande_rejouer(fichier),
         ["collecter", minutes] => {
             tray::ouvrir_console();
@@ -102,6 +108,10 @@ fn main() {
     ddragon::charger_en_fond(tx.clone());
     lcu::evenements::lancer(tx.clone());
     verifier_cle_en_fond();
+    // Lancement avec Windows (registre à jour si l'exe a bougé) et mise à jour auto.
+    let reglages = stockage::Reglages::charger();
+    demarrage::synchroniser(&reglages);
+    maj::lancer_en_fond(&reglages);
 
     log!("Prêt en {} ms.", debut.elapsed().as_millis());
     if console {
@@ -137,6 +147,31 @@ fn commande_cle(cle: &str) {
     match stockage::sauver_cle(cle) {
         Ok(()) => println!("Clé enregistrée dans {}", stockage::chemin_cle().display()),
         Err(e) => println!("Impossible d'enregistrer la clé : {e}"),
+    }
+}
+
+/// `stat-traque demarrage oui|non` : écrit le registre ET le réglage `demarrage`.
+fn commande_demarrage(choix: &str) {
+    tray::ouvrir_console();
+    let oui = match choix.to_lowercase().as_str() {
+        "oui" | "on" | "1" => true,
+        "non" | "off" | "0" => false,
+        _ => {
+            println!("Utilisation : stat-traque demarrage oui   (ou non)");
+            return;
+        }
+    };
+    if let Err(e) = demarrage::activer(oui) {
+        println!("Impossible de modifier le lancement avec Windows : {e}");
+        return;
+    }
+    let mut r = stockage::Reglages::charger();
+    r.set("demarrage", if oui { "oui" } else { "non" });
+    let _ = r.sauver();
+    if oui {
+        println!("stat-traque se lancera avec Windows.");
+    } else {
+        println!("stat-traque ne se lancera plus avec Windows.");
     }
 }
 

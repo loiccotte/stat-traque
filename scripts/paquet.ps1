@@ -26,7 +26,8 @@ stat-traque - alternative légère à Blitz (projet perso, gratuit)
 2. En champ select la fenêtre s'ouvre toute seule : analyse des deux compos, picks
    conseillés, matchups, et au verrouillage ta page de runes "stat-traque ..." et tes
    sorts sont choisis automatiquement. Garde une place libre dans tes pages de runes.
-   Fermer la fenêtre libère sa mémoire ; stat-traque reste dans l'icône.
+   Fermer la fenêtre libère sa mémoire ; stat-traque reste dans l'icône. (Tant qu'elle est
+   ouverte, la fenêtre apparaît comme un 2e stat-traque.exe dans le Gestionnaire des tâches.)
 3. OVERLAY EN JEU : Ctrl+Maj+Tab pendant la partie (ou clic droit sur l'icône) affiche
    les rangs des 10 joueurs par-dessus le jeu ; les clics passent au travers.
    IMPORTANT : dans les options vidéo de LoL, choisis le mode "Sans bordure"

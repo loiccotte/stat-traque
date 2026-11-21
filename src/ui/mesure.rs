@@ -133,9 +133,13 @@ fn etape(nom: &str, secondes: u64) {
     };
     let (totale, privee) = memoire_mo(None).unwrap_or_default();
     let principal = format!("privée {privee:>5.1} Mo (totale {totale:>5.1})  CPU {}", pourcent(cpu.0, temps_cpu(None)));
-    let fenetre = match enfant.filter(|p| pid_enfant() == Some(*p)).and_then(|p| memoire_mo(Some(p)).map(|m| (p, m))) {
+    // RAM : le processus de la fenêtre vivant À LA FIN de l'étape. CPU : seulement
+    // si c'est le même qu'au début (sinon il vient de naître : « — »).
+    let maintenant = pid_enfant();
+    let cpu_enfant = if maintenant == enfant { cpu.1 } else { None };
+    let fenetre = match maintenant.and_then(|p| memoire_mo(Some(p)).map(|m| (p, m))) {
         Some((p, (t, pr))) => {
-            format!("privée {pr:>5.1} Mo (totale {t:>5.1})  CPU {}", pourcent(cpu.1, temps_cpu(Some(p))))
+            format!("privée {pr:>5.1} Mo (totale {t:>5.1})  CPU {}", pourcent(cpu_enfant, temps_cpu(Some(p))))
         }
         None => "pas de processus".into(),
     };

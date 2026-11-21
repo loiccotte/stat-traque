@@ -37,7 +37,7 @@ Les agents sont définis dans `.claude/agents/` ; les règles communes dans `CLA
 | T04 | Cache Data Dragon versionné (champions, runes, items, sorts) | dev-donnees | T02, T03 | 0 requête si patch inchangé | ✅ |
 | T05 | WebSocket LCU événementiel (`OnJsonApiEvent`) | dev-lcu | T02 | plus aucun polling LCU | ✅ |
 | T06 | Client Riot API : rate limiter, cache, régions | dev-riot-api | T02, T03 | respecte 20/s et 100/2 min | ✅ |
-| T07 | Squelette UI : tray + fenêtre à la demande | dev-ui | T01 | < 15 Mo au repos | 🟡 fait, RAM après fermeture à mesurer sous Windows (voir Mesures T07) |
+| T07 | Squelette UI : tray + fenêtre à la demande | dev-ui | T01 | < 15 Mo au repos | ✅ fenêtre dans un processus enfant (voir Mesures T07) ; à confirmer sous Windows |
 | T08 | Banc de mesure perf (RAM, taille, démarrage) | perf | T01 | script reproductible | ✅ |
 | T09 | Machine d'états gameflow (lobby → champ select → partie → fin) | dev-lcu | T05 | transitions loguées | ✅ |
 | T10 | Source des builds / runes (**décision à prendre**) | dev-donnees | T04, T06 | format interne défini |  |
@@ -48,7 +48,7 @@ Les agents sont définis dans `.claude/agents/` ; les règles communes dans `CLA
 | T15 | Rangs des 10 joueurs | dev-riot-api | T06, T09 | affichés en < 2 s |  |
 | T16 | Profil rapide : winrate champion, badges | dev-riot-api | T15 | requêtes bornées et en cache |  |
 | T17 | Écran partie en cours | dev-ui | T07, T16 | rafraîchi sur événement | ✅ |
-| T18 | Overlay en jeu click-through | dev-ui | T17 | < 40 Mo en partie | 🟡 fait, à vérifier en jeu sous Windows |
+| T18 | Overlay en jeu click-through | dev-ui | T17 | < 40 Mo en partie | 🟡 natif GDI, à vérifier en jeu sous Windows |
 | T19 | Base locale des parties | dev-donnees | T03, T06 | résumé compact par partie (pas le JSON) | ✅ |
 | T20 | Écran post-game | dev-ui | T07, T19 | comparaison à ta moyenne | ✅ (onglet Historique) |
 | T21 | Stats perso et suivi LP | dev-donnees | T19 | calculs hors ligne | ✅ |
@@ -95,29 +95,45 @@ résumé compact des parties au lieu du JSON match-v5 brut (T19).
   Pour les autres : Blitz agrège des millions de parties sur ses serveurs.
   Options : (a) agréger nous-mêmes via match-v5 sur des joueurs haut classement (lent, limité par la clé dev),
   (b) builds perso + presets maintenus à la main, (c) source publique tierce (vérifier les conditions d'utilisation).
-- **T07 – bibliothèque UI** : décidé **egui/eframe**, rendu OpenGL (`glow`), sans options par défaut.
-  Si la RAM après fermeture dépasse le budget sous Windows (pilote OpenGL resté chargé),
-  plan B : la fenêtre dans un processus enfant (`stat-traque --fenetre`) qui meurt à la fermeture.
+- **T07 – bibliothèque UI** : décidé **egui/eframe**, rendu OpenGL (`glow`), sans options par défaut,
+  dans un **processus enfant** (`stat-traque --fenetre`) qui meurt à la fermeture (le pilote OpenGL
+  reste chargé jusqu'à la fin du processus qui l'utilise). Overlay : **Win32 natif (GDI)**.
 
 ## Mesures T07 (fenêtre egui + overlay)
-Architecture : un thread « fenetre » créé au démarrage, endormi (Condvar) tant que rien n'est
-demandé ; `eframe::run_native` (run_and_return, winit `with_any_thread`) crée fenêtre + contexte
-OpenGL à l'ouverture et détruit tout à la fermeture. Une seule fenêtre à la fois (principale OU
-overlay). Redessin uniquement sur changement d'état (`affichage::quand_ca_change`) ou action de
-la souris ; animations coupées.
+Architecture (après revue perf) :
+- **processus principal** (icône) : AUCUNE bibliothèque graphique chargée en fonctionnement
+  (opengl32.dll est importée par l'exe mais le pilote de la carte graphique ne se charge qu'à la
+  création d'un contexte OpenGL, jamais dans ce processus). Un thread « fenetre » dort (Condvar).
+- **fenêtre** : processus enfant `stat-traque --fenetre`, lancé à l'ouverture, nourri par une ligne
+  JSON par changement d'état (gros champs seulement quand leur `Arc` change), qui meurt à la
+  fermeture -> pilote OpenGL, polices, textures rendus au système. Redessin seulement sur message
+  reçu ou action de la souris ; animations coupées.
+- **overlay** : fenêtre Win32 native (WS_EX_LAYERED | TRANSPARENT | TOPMOST | NOACTIVATE |
+  TOOLWINDOW), texte GDI, dans le thread de l'icône ; redessinée (InvalidateRect) à chaque
+  changement de l'état. Pas d'OpenGL.
 
-| Mesure | Valeur | Budget |
+Mesures `stat-traque essai-fenetre` sous Linux (Xvfb + Mesa llvmpipe) :
+
+| Étape | Processus principal (privée) | Processus fenêtre (privée) | CPU quand rien ne change |
+|---|---|---|---|
+| Au repos, rien d'ouvert | 0,7 Mo | — | 0,00 % |
+| Fenêtre ouverte | 0,8 Mo | 38,1 Mo (llvmpipe) | 0,00 % / 0,00 % |
+| Fenêtre fermée | 0,8 Mo | — (processus terminé) | 0,00 % |
+| Overlay (Linux : egui dans l'enfant) | 0,8 Mo | 37,1 Mo | 0,00 % |
+| Tout fermé | 0,8 Mo | — | 0,00 % |
+
+(« principal » = la commande d'essai ; l'app complète au repos était à ~9 Mo, l'interface y
+ajoute ~0,1 Mo.) Sous Windows l'overlay est natif : estimation < 1 Mo dans le processus
+principal (une fenêtre, une police GDI, ~60 cases de texte). Avant la revue : 34 Mo restaient
+dans le processus après fermeture et 50,6 Mo avec l'overlay egui.
+
+| Taille .exe Windows | Valeur | Budget |
 |---|---|---|
-| Taille .exe Windows (avant -> après eframe) | 1,09 Mo -> 5,18 Mo (+4,1 Mo) ; 5,47 Mo avec toutes les features fusionnées | < 20 Mo |
-| CPU fenêtre ouverte, rien ne change | 0,00 % | ~0 % |
-| CPU overlay affiché, rien ne change | 0,00 % | ~0 % |
-| RAM privée au repos, avant toute ouverture | 0,7 Mo (Linux) | < 15 Mo |
-| RAM privée fenêtre ouverte | 37,8 Mo (Linux, Mesa llvmpipe = rendu logiciel) | — |
-| RAM privée après fermeture | 34 Mo (Linux, llvmpipe) : le pilote OpenGL reste chargé | < 15 Mo ⚠ |
-| RAM privée overlay | 50,6 Mo (Linux, llvmpipe) | < 40 Mo ⚠ |
+| sans interface | 1,09 Mo | |
+| + eframe (glow, default_fonts) | 5,18 Mo (+4,1 Mo) | |
+| + toutes les features fusionnées | 5,47 Mo | |
+| + serde derive (protocole) + overlay GDI | 5,72 Mo (+0,25 Mo) | < 20 Mo |
 
-Les chiffres Linux viennent de Xvfb + Mesa **llvmpipe** (rendu OpenGL logiciel, très gourmand :
-compilateur LLVM en mémoire). egui lui-même pèse ~4 Mo (37,8 ouverte - 34 fermée). **La mesure
-qui compte est sous Windows avec le vrai pilote graphique** : `stat-traque essai-fenetre`
-(affiche RAM privée / totale et CPU à chaque étape, ~45 s, sans LoL). Si « Fenêtre fermée » ou
-« Overlay » dépasse le budget : plan B processus enfant (voir Décisions ouvertes).
+Polices : seules les polices de base d'egui (Ubuntu-Light, Hack, icônes egui) ; les polices
+emoji (`monochrome_emoji_fonts`) ne sont PAS activées. **À confirmer sous Windows** avec le vrai
+pilote : `stat-traque essai-fenetre` (RAM privée / totale et CPU des deux processus, ~50 s).

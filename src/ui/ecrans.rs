@@ -30,6 +30,8 @@ pub struct Ecran {
     form: FormReglages,
     /// Résultat du dernier « Enregistrer ».
     retour_reglages: Option<(bool, String)>,
+    /// Rôle choisi dans la tier list (+ lignes déjà filtrées).
+    filtre_tier: super::historique::FiltreTier,
 }
 
 impl Ecran {
@@ -39,6 +41,7 @@ impl Ecran {
             phase_vue: etat.phase,
             form: FormReglages::depuis(&Reglages::charger()),
             retour_reglages: None,
+            filtre_tier: super::historique::FiltreTier::default(),
         }
     }
 
@@ -81,7 +84,13 @@ pub fn dessiner(ui: &mut Ui, ecran: &mut Ecran, etat: &EtatAffichage) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(theme::FOND).inner_margin(egui::Margin::same(12)))
         .show(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| dessiner_onglet(ui, ecran, etat));
+            // Tier list et journal ont leur propre défilement « virtualisé » : seules
+            // les lignes visibles sont dessinées (pas des centaines à chaque image).
+            if matches!(ecran.onglet, Onglet::TierList | Onglet::Journal) {
+                dessiner_onglet(ui, ecran, etat);
+            } else {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| dessiner_onglet(ui, ecran, etat));
+            }
         });
 }
 
@@ -95,7 +104,7 @@ fn dessiner_onglet(ui: &mut Ui, ecran: &mut Ecran, etat: &EtatAffichage) {
         Onglet::Partie => dessiner_partie(ui, etat, donnees),
         Onglet::Historique => super::historique::dessiner(ui, etat, donnees),
         Onglet::TierList => match &etat.tier_list {
-            Some(t) => super::historique::dessiner_tier_list(ui, t),
+            Some(t) => super::historique::dessiner_tier_list(ui, t, &mut ecran.filtre_tier),
             None => vide(ui, "Pas encore de stats pour ce patch (stat-traque collecter 30)."),
         },
         Onglet::Journal => dessiner_journal(ui, &etat.messages),
@@ -462,9 +471,17 @@ fn dessiner_journal(ui: &mut Ui, messages: &[String]) {
     if messages.is_empty() {
         return vide(ui, "Aucun message pour l'instant.");
     }
-    for m in messages {
-        ui.label(RichText::new(m).monospace().size(12.5));
-    }
+    let hauteur = ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show_rows(
+        ui,
+        hauteur,
+        messages.len(),
+        |ui, lignes| {
+            for m in &messages[lignes] {
+                ui.monospace(m);
+            }
+        },
+    );
 }
 
 // ---------------------------------------------------------------- Réglages
@@ -483,7 +500,11 @@ fn dessiner_reglages(ui: &mut Ui, ecran: &mut Ecran) {
         ui.checkbox(&mut f.sorts_auto, "Appliquer les sorts conseillés au verrouillage");
         ui.checkbox(&mut f.objets_auto, "Ajouter l'item set conseillé dans la boutique");
         ui.checkbox(&mut f.fenetre_auto, "Ouvrir cette fenêtre au début du champ select");
-        ui.label(RichText::new("Pris en compte dès le prochain champ select.").color(theme::TEXTE_DOUX).small());
+        ui.label(
+            RichText::new("Runes, sorts, item set : pris en compte au prochain verrouillage.")
+                .color(theme::TEXTE_DOUX)
+                .small(),
+        );
     });
     ui.add_space(8.0);
     theme::carte().show(ui, |ui| {

@@ -1,6 +1,8 @@
 //! Onglets « Historique » (mes parties, stats perso, LP, récap) et « Tier list ».
 //! Données préparées par historique.rs / stats.rs ; ici on ne fait que dessiner.
 
+use std::sync::Arc;
+
 use eframe::egui::{self, RichText, Stroke, Ui};
 
 use super::ecrans::couleur_winrate;
@@ -222,35 +224,67 @@ fn dessiner_parties(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJ
 
 // ---------------------------------------------------------------- Tier list
 
-pub fn dessiner_tier_list(ui: &mut Ui, t: &VueTierList) {
-    ui.label(
-        RichText::new(format!("Patch {} · {} parties analysées", t.patch, format::milliers(t.parties))).color(theme::TEXTE_DOUX),
-    );
-    for role in crate::stats::ROLES {
-        let lignes: Vec<_> = t.lignes.iter().filter(|l| l.role == role).collect();
-        if lignes.is_empty() {
-            continue;
-        }
-        ui.add_space(6.0);
-        egui::CollapsingHeader::new(RichText::new(format::libelle_role(role)).color(theme::OR).strong())
-            .id_salt(("tier", role))
-            .default_open(true)
-            .show(ui, |ui| {
-                egui::Grid::new(("tier_grille", role)).num_columns(6).striped(true).spacing([14.0, 3.0]).show(ui, |ui| {
-                    for e in ["#", "Champion", "Victoires", "Choisi", "Banni", "Parties"] {
-                        ui.label(RichText::new(e).color(theme::TEXTE_DOUX).small());
-                    }
-                    ui.end_row();
-                    for (i, l) in lignes.iter().enumerate() {
-                        ui.label(RichText::new((i + 1).to_string()).color(theme::TEXTE_DOUX));
-                        ui.label(RichText::new(&l.champion).strong());
-                        ui.label(RichText::new(format::pourcent(l.winrate)).color(couleur_winrate(l.winrate)));
-                        ui.label(format::pourcent(l.pick_rate));
-                        ui.label(format::pourcent(l.ban_rate));
-                        ui.label(format::milliers(l.parties));
-                        ui.end_row();
-                    }
-                });
-            });
+/// Rôle affiché dans la tier list, et les lignes de ce rôle (indices dans
+/// `VueTierList::lignes`), recalculées SEULEMENT quand le rôle ou la liste change.
+pub struct FiltreTier {
+    role: &'static str,
+    /// (liste pour laquelle le filtre a été fait, rôle, indices des lignes)
+    cache: Option<(Arc<VueTierList>, &'static str, Vec<usize>)>,
+}
+
+impl Default for FiltreTier {
+    fn default() -> Self {
+        Self { role: "middle", cache: None }
     }
+}
+
+pub fn dessiner_tier_list(ui: &mut Ui, t: &Arc<VueTierList>, filtre: &mut FiltreTier) {
+    ui.horizontal(|ui| {
+        for role in crate::stats::ROLES {
+            let texte = RichText::new(format::libelle_role(role));
+            if ui.selectable_label(filtre.role == role, texte).clicked() {
+                filtre.role = role;
+            }
+        }
+        ui.add_space(12.0);
+        ui.label(
+            RichText::new(format!("Patch {} · {} parties analysées", t.patch, format::milliers(t.parties)))
+                .color(theme::TEXTE_DOUX),
+        );
+    });
+    let a_jour = filtre.cache.as_ref().is_some_and(|(liste, role, _)| Arc::ptr_eq(liste, t) && *role == filtre.role);
+    if !a_jour {
+        let indices = t.lignes.iter().enumerate().filter(|(_, l)| l.role == filtre.role).map(|(i, _)| i).collect();
+        filtre.cache = Some((t.clone(), filtre.role, indices));
+    }
+    let Some((_, _, indices)) = &filtre.cache else { return };
+    ui.add_space(6.0);
+    // Largeurs fixes : les colonnes restent alignées quelle que soit la partie visible.
+    const LARGEURS: [f32; 6] = [36.0, 150.0, 90.0, 80.0, 80.0, 80.0];
+    let ligne = |ui: &mut Ui, cases: [RichText; 6]| {
+        ui.horizontal(|ui| {
+            for (case, largeur) in cases.into_iter().zip(LARGEURS) {
+                ui.add_sized([largeur, 18.0], egui::Label::new(case));
+            }
+        });
+    };
+    let doux = |t: &str| RichText::new(t).color(theme::TEXTE_DOUX).small();
+    ligne(ui, [doux("#"), doux("Champion"), doux("Victoires"), doux("Choisi"), doux("Banni"), doux("Parties")]);
+    let hauteur = 18.0 + ui.spacing().item_spacing.y;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, hauteur, indices.len(), |ui, visibles| {
+        for rang in visibles {
+            let l = &t.lignes[indices[rang]];
+            ligne(
+                ui,
+                [
+                    RichText::new((rang + 1).to_string()).color(theme::TEXTE_DOUX),
+                    RichText::new(&l.champion).strong(),
+                    RichText::new(format::pourcent(l.winrate)).color(couleur_winrate(l.winrate)),
+                    RichText::new(format::pourcent(l.pick_rate)),
+                    RichText::new(format::pourcent(l.ban_rate)),
+                    RichText::new(format::milliers(l.parties)),
+                ],
+            );
+        }
+    });
 }

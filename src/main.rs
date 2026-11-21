@@ -17,6 +17,8 @@
 //   stockage.rs    dossier %APPDATA%\stat-traque (clé, réglages, cache)
 //   http.rs        clients HTTP partagés
 //   tray.rs        icône Windows
+//   demarrage.rs   lancement avec Windows (registre)
+//   maj.rs         mise à jour automatique (releases GitHub)
 //   journal.rs     messages (console + fichier)
 //   enregistreur.rs  enregistre les sessions (anonymisées) pour les rejouer
 //   rejeu.rs       rejoue un enregistrement sans LoL
@@ -30,6 +32,7 @@ mod champselect;
 mod collecte;
 mod compo;
 mod ddragon;
+mod demarrage;
 mod enregistreur;
 mod evenement;
 mod gameflow;
@@ -38,6 +41,7 @@ mod http;
 mod journal;
 mod lcu;
 mod live;
+mod maj;
 mod rangs;
 mod rejeu;
 mod stats;
@@ -57,6 +61,7 @@ const AIDE: &str = "stat-traque — alternative légère à Blitz
   stat-traque --rejouer f.jsonl  rejoue une session enregistrée (sans LoL)
   stat-traque collecter 30       collecte 30 min de parties Master+ (stats de runes)
   stat-traque historique         mes parties, stats perso et LP (base locale, hors ligne)
+  stat-traque demarrage oui      lance stat-traque avec Windows (non = arrêter)
   stat-traque aide               affiche cette aide";
 
 fn main() {
@@ -72,6 +77,7 @@ fn main() {
             tray::ouvrir_console();
             return historique::commande();
         }
+        ["demarrage", choix] => return commande_demarrage(choix),
         ["--rejouer", fichier] => return commande_rejouer(fichier),
         ["collecter", minutes] => {
             tray::ouvrir_console();
@@ -104,13 +110,19 @@ fn main() {
     log!("stat-traque {} — démarrage", env!("CARGO_PKG_VERSION"));
 
     // Un canal = une file de messages. Les threads envoient (`tx`), le cerveau reçoit (`rx`).
-    enregistreur::demarrer(&stockage::Reglages::charger());
+    // Réglages lus UNE fois ici, puis prêtés (`&`) à ceux qui en ont besoin au démarrage.
+    let reglages = stockage::Reglages::charger();
+    enregistreur::demarrer(&reglages);
     let (tx, rx) = mpsc::channel();
     ddragon::charger_en_fond(tx.clone());
     lcu::evenements::lancer(tx.clone());
-    verifier_cle_en_fond();
+    verifier_cle_en_fond(&reglages);
+    // Lancement avec Windows : registre remis à jour si l'exe a bougé.
+    demarrage::synchroniser(&reglages);
 
     log!("Prêt en {} ms.", debut.elapsed().as_millis());
+    // Mise à jour auto APRÈS « Prêt » : ce lancement a réussi, l'ancien exe peut être rangé.
+    maj::lancer_en_fond(&reglages);
     if console {
         cerveau::boucle(rx, tx, cerveau::Mode::Console);
     } else {
@@ -147,6 +159,31 @@ fn commande_cle(cle: &str) {
     }
 }
 
+/// `stat-traque demarrage oui|non` : écrit le registre ET le réglage `demarrage`.
+fn commande_demarrage(choix: &str) {
+    tray::ouvrir_console();
+    let oui = match choix.to_lowercase().as_str() {
+        "oui" | "on" | "1" => true,
+        "non" | "off" | "0" => false,
+        _ => {
+            println!("Utilisation : stat-traque demarrage oui   (ou non)");
+            return;
+        }
+    };
+    if let Err(e) = demarrage::activer(oui) {
+        println!("Impossible de modifier le lancement avec Windows : {e}");
+        return;
+    }
+    let mut r = stockage::Reglages::charger();
+    r.set("demarrage", if oui { "oui" } else { "non" });
+    let _ = r.sauver();
+    if oui {
+        println!("stat-traque se lancera avec Windows.");
+    } else {
+        println!("stat-traque ne se lancera plus avec Windows.");
+    }
+}
+
 fn commande_region(region: &str) {
     tray::ouvrir_console();
     let mut r = stockage::Reglages::charger();
@@ -158,9 +195,11 @@ fn commande_region(region: &str) {
 }
 
 /// Ménage du cache et vérification de la clé, sans retarder le démarrage.
-fn verifier_cle_en_fond() {
-    std::thread::spawn(|| {
-        let api = riot_api::RiotApi::depuis_reglages(&stockage::Reglages::charger());
+fn verifier_cle_en_fond(reglages: &stockage::Reglages) {
+    // Le thread a besoin de SA copie (il vit plus longtemps que `main` ne prête les réglages).
+    let reglages = reglages.clone();
+    std::thread::spawn(move || {
+        let api = riot_api::RiotApi::depuis_reglages(&reglages);
         let supprimes = api.nettoyer_cache();
         if supprimes > 0 {
             log!("Cache Riot : {supprimes} fichiers périmés supprimés.");

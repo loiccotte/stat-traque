@@ -382,7 +382,8 @@ fn infos_paralleles(
 }
 
 /// En partie : les 10 joueurs via spectator-v5. Lancé dans un thread à part.
-pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, tx: Sender<Evenement>) {
+/// `session` est renvoyée telle quelle avec le résultat (le cerveau ignore les résultats périmés).
+pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, session: u32, tx: Sender<Evenement>) {
     std::thread::spawn(move || {
         let avant = crate::riot_api::Compteurs::maintenant();
         oublier_partie();
@@ -422,16 +423,16 @@ pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, tx: Sender<Evenement
             })
             .collect();
         crate::log!("Rangs : {} (mesuré pour cette partie).", crate::riot_api::Compteurs::depuis(avant));
-        let _ = tx.send(Evenement::Rangs(infos));
+        let _ = tx.send(Evenement::Rangs { session, joueurs: infos });
     });
 }
 
 /// Champ select non classé : rangs des alliés dont le client donne le puuid.
-pub fn scouter_allies(api: Arc<RiotApi>, allies: Vec<(String, u16, bool)>, tx: Sender<Evenement>) {
+pub fn scouter_allies(api: Arc<RiotApi>, allies: Vec<(String, u16, bool)>, session: u32, tx: Sender<Evenement>) {
     std::thread::spawn(move || {
         let joueurs: Vec<_> = allies.into_iter().map(|(p, c, moi)| (p, String::from("allié"), c, true, moi)).collect();
         let infos = infos_paralleles(&api, &joueurs, false, None).into_iter().map(|(j, _)| j).collect();
-        let _ = tx.send(Evenement::Rangs(infos));
+        let _ = tx.send(Evenement::Rangs { session, joueurs: infos });
     });
 }
 

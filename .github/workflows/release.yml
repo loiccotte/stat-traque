@@ -1,0 +1,52 @@
+# Publication d'une version : il suffit de pousser un tag "vX.Y.Z".
+#   git tag v0.3.0 && git push origin v0.3.0
+# Ce workflow compile l'exe Windows, vérifie les budgets de performance, puis crée
+# la release GitHub avec stat-traque.exe (lu par la mise à jour automatique, src/maj.rs)
+# et le zip à partager (scripts/paquet.ps1).
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+# GITHUB_TOKEN doit pouvoir créer une release et y attacher des fichiers.
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false # le jeton GitHub ne reste pas dans .git/config
+      - name: Rust stable
+        run: rustup update stable && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Le tag correspond à la version du Cargo.toml
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            "::error::Le tag $env:GITHUB_REF_NAME ne correspond pas à la version v$version du Cargo.toml"
+            exit 1
+          }
+      - name: Tests
+        run: cargo test
+      - name: Exe et zip à partager
+        shell: pwsh
+        run: ./scripts/paquet.ps1
+      - name: Budgets de performance
+        shell: pwsh
+        run: |
+          # Pas de mise à jour automatique pendant la mesure (elle fausserait le CPU au repos).
+          New-Item -ItemType Directory -Force "$env:APPDATA\stat-traque" | Out-Null
+          "maj=non" | Set-Content "$env:APPDATA\stat-traque\reglages.txt"
+          ./scripts/mesure.ps1
+      - name: Création de la release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            target/release/stat-traque.exe paquet/stat-traque.zip `
+            --title "stat-traque $env:GITHUB_REF_NAME" --generate-notes --latest

@@ -81,6 +81,62 @@ mod tests {
         assert!(nombre > 0, "aucun enregistrement dans enregistrements/");
     }
 
+    /// Multi-comptes : un ami se connecte sur le même PC pendant la session.
+    /// Le compte est relu à la connexion (get) PUIS suivi en direct (ws).
+    #[test]
+    fn changer_de_compte_remet_a_zero() {
+        let contenu = r#"{"src":"get","uri":"/lol-summoner/v1/current-summoner","data":{"puuid":"J-aaaa"},"t":0}
+{"src":"get","uri":"/lol-gameflow/v1/gameflow-phase","data":"Lobby","t":1}
+{"src":"ws","msg":[8,"OnJsonApiEvent",{"uri":"/lol-summoner/v1/current-summoner","eventType":"Update","data":{"puuid":"J-bbbb"}}],"t":50}"#;
+        let evs = evenements(contenu);
+        let comptes: Vec<&str> = evs
+            .iter()
+            .filter_map(|e| match e {
+                Evenement::Moi { puuid } => Some(&**puuid),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(comptes, ["J-aaaa", "J-bbbb"]);
+
+        // Le cerveau doit effacer ce qui appartenait à l'ancien compte (ici : les rangs affichés),
+        // mais garder tout si c'est le même compte qui revient.
+        let joueur = crate::rangs::InfoJoueur {
+            nom: "J-cccc".into(),
+            champion: 238,
+            bleu: true,
+            moi: false,
+            solo: None,
+            flex: None,
+            meilleur: None,
+            maitrise: None,
+            badges: Vec::new(),
+        };
+        // `fin` : événements envoyés après le retour du client avec le compte `second`.
+        let rangs_apres = |second: &str, fin: Vec<Evenement>| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let debut = [
+                Evenement::ClientConnecte(None),
+                Evenement::Moi { puuid: "J-aaaa".into() },
+                Evenement::Rangs { session: 0, joueurs: vec![joueur.clone()] },
+                Evenement::ClientPerdu,
+                Evenement::ClientConnecte(None),
+                Evenement::Moi { puuid: second.into() },
+            ];
+            for ev in debut.into_iter().chain(fin).chain([Evenement::Quitter]) {
+                tx.send(ev).unwrap();
+            }
+            crate::cerveau::boucle(rx, tx, crate::cerveau::Mode::Rejeu);
+            crate::affichage::lire().rangs.len()
+        };
+        assert_eq!(rangs_apres("J-aaaa", vec![]), 1, "même compte : on garde");
+        assert_eq!(rangs_apres("J-bbbb", vec![]), 0, "autre compte : on efface");
+        // Résultat d'une recherche lancée pour l'ANCIEN compte, arrivé trop tard : ignoré.
+        let perime = Evenement::Rangs { session: 0, joueurs: vec![joueur.clone()] };
+        assert_eq!(rangs_apres("J-bbbb", vec![perime]), 0, "résultat périmé ignoré");
+        let frais = Evenement::Rangs { session: 1, joueurs: vec![joueur.clone()] };
+        assert_eq!(rangs_apres("J-bbbb", vec![frais]), 1, "résultat du nouveau compte affiché");
+    }
+
     #[test]
     fn rejoue_une_session_simple() {
         let contenu = r#"{"src":"get","uri":"/lol-gameflow/v1/gameflow-phase","data":"Lobby","t":0}

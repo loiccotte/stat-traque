@@ -1,6 +1,6 @@
 [package]
 name = "stat-traque"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
@@ -28,6 +28,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
+    "Win32_System_Registry",       # lancement avec Windows (clé Run) : coût ~0
+    "Win32_Security_Cryptography", # SHA-256 de la mise à jour (bcrypt.dll) : coût ~0
+    "Win32_Storage_FileSystem",    # renommage durable de la mise à jour (MoveFileExW) : coût ~0
 ] }
 
 # Pour un .exe le plus petit et rapide possible quand on compile en "release".

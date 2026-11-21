@@ -31,7 +31,12 @@ pub enum Evenement {
     /// `summoner_id` : sert aux item sets du client (`/lol-item-sets/v1/item-sets/{id}/sets`).
     Moi { puuid: Box<str>, summoner_id: Option<u64> },
     /// Rangs des joueurs (alliés en champ select non classé, ou les 10 en partie).
-    Rangs(Vec<crate::rangs::InfoJoueur>),
+    /// `session` : numéro du compte pour lequel la recherche a été lancée (voir
+    /// `cerveau::changer_compte`) ; un résultat arrivé après un changement de compte est ignoré.
+    Rangs { session: u32, joueurs: Vec<crate::rangs::InfoJoueur> },
+    /// Synchro de mon historique terminée (parties, stats perso, LP, récap éventuel).
+    /// `Box` : le contenu est gros, l'événement reste petit dans le canal.
+    Historique(Box<crate::historique::MajHistorique>),
     /// Demande d'arrêt (menu "Quitter" de l'icône).
     #[cfg_attr(not(windows), allow(dead_code))]
     Quitter,

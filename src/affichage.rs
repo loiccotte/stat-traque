@@ -133,6 +133,15 @@ pub struct EtatAffichage {
     pub messages: Vec<String>,
     /// Tier list du patch (tous rôles), calculée une fois au démarrage.
     pub tier_list: Option<VueTierList>,
+    // --- Historique et stats perso (feature/historique, voir historique.rs) ---
+    /// Mes 20 dernières parties, plus récentes d'abord (champion = id : nom via Data Dragon).
+    pub historique: Vec<crate::historique::ResumePartie>,
+    /// Mes moyennes par champion / rôle / patch / file.
+    pub stats_perso: Option<crate::historique::StatsPerso>,
+    /// Rang actuel, meilleur rang, LP sur 7 jours, derniers points (graphique).
+    pub progression_lp: Option<crate::historique::ProgressionLp>,
+    /// Récap de la dernière partie, comparé à ma moyenne sur ce champion.
+    pub recap: Option<crate::historique::Recap>,
 }
 
 static ETAT: Mutex<Option<EtatAffichage>> = Mutex::new(None);

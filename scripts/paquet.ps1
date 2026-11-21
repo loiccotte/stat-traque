@@ -29,6 +29,13 @@ stat-traque - alternative légère à Blitz (projet perso, gratuit)
      flash=f        Flash sur F (par défaut : D)
      runes=non      ne pas changer mes runes
      sorts=non      ne pas changer mes sorts
+     accepter=oui   accepter la partie automatiquement (désactivé par défaut)
+     maj=non        pas de mise à jour automatique
+   Lancement avec Windows : stat-traque demarrage oui   (ou non)
+4. Mise à jour automatique : l'ancienne version reste à côté (stat-traque.exe.ancien)
+   jusqu'au 2e lancement de la nouvelle. Pour revenir en arrière (ou si stat-traque.exe
+   a disparu après une coupure) : quitter stat-traque, supprimer stat-traque.exe s'il
+   existe, renommer stat-traque.exe.ancien en stat-traque.exe, mettre maj=non dans les réglages.
 Pour arrêter : ferme la fenêtre noire.
 "@ | Set-Content -Encoding UTF8 "$dossier\LISEZMOI.txt"
 

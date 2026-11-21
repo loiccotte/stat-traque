@@ -49,13 +49,13 @@ Les agents sont définis dans `.claude/agents/` ; les règles communes dans `CLA
 | T16 | Profil rapide : winrate champion, badges | dev-riot-api | T15 | requêtes bornées et en cache |  |
 | T17 | Écran partie en cours | dev-ui | T07, T16 | rafraîchi sur événement |  |
 | T18 | Overlay en jeu click-through | dev-ui | T17 | < 40 Mo en partie |  |
-| T19 | Base locale des parties | dev-donnees | T03, T06 | match-v5 en cache permanent |  |
+| T19 | Base locale des parties | dev-donnees | T03, T06 | résumé compact par partie (pas le JSON) | ✅ |
 | T20 | Écran post-game | dev-ui | T07, T19 | comparaison à ta moyenne |  |
-| T21 | Stats perso et suivi LP | dev-donnees | T19 | calculs hors ligne |  |
+| T21 | Stats perso et suivi LP | dev-donnees | T19 | calculs hors ligne | ✅ |
 | T22 | Écran historique / profil | dev-ui | T21 | filtres champion / rôle |  |
 | T23 | Tests avec réponses LCU / Riot simulées | qualite | T05, T06 | `cargo test` vert | 🟡 15 tests unitaires |
 | T24 | Audit conformité Riot | qualite | T13, T18 | checklist validée |  |
-| T25 | Packaging : .exe unique, mise à jour, démarrage Windows | qualite | T08, T24 | release GitHub |  |
+| T25 | Packaging : .exe unique, mise à jour, démarrage Windows | qualite | T08, T24 | release GitHub | 🟡 release, mise à jour, démarrage faits ; audit T24 à faire |
 | T26 | Fiches matchup OTP : format + import CSV / Google Sheet | dev-donnees | T04 | une fiche Zed importée |  |
 | T27 | Détection de l'adversaire de lane en champ select | dev-lcu | T09 | bon adversaire en draft |  |
 | T28 | Affichage de la fiche en champ select et overlay | dev-ui | T14, T26, T27 | affichée en < 100 ms |  |

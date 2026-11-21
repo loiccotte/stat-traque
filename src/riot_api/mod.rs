@@ -14,6 +14,7 @@
 pub mod cache;
 pub mod limiteur;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -60,6 +61,42 @@ pub fn region_routage(plateforme: &str) -> &'static str {
     }
 }
 
+// ---------- Compteurs de requêtes ----------
+// Pour MESURER combien de requêtes coûte chaque écran (partie, synchro de l'historique...).
+// Un compteur atomique se modifie depuis plusieurs threads sans verrou.
+
+/// Requêtes réellement envoyées à Riot (celles qui comptent pour les limites de la clé).
+static REQUETES_RESEAU: AtomicU64 = AtomicU64::new(0);
+/// Réponses servies par le cache disque (0 requête).
+static REPONSES_CACHE: AtomicU64 = AtomicU64::new(0);
+
+/// Instantané des compteurs : on en prend un avant une opération, puis
+/// `Compteurs::depuis(avant)` donne ce que l'opération a coûté.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Compteurs {
+    pub reseau: u64,
+    pub cache: u64,
+}
+
+impl Compteurs {
+    pub fn maintenant() -> Self {
+        Self { reseau: REQUETES_RESEAU.load(Ordering::Relaxed), cache: REPONSES_CACHE.load(Ordering::Relaxed) }
+    }
+
+    /// Ce qui a été consommé depuis `avant`. Approximatif si plusieurs opérations
+    /// tournent en même temps (les compteurs sont communs à toute l'app).
+    pub fn depuis(avant: Self) -> Self {
+        let n = Self::maintenant();
+        Self { reseau: n.reseau.saturating_sub(avant.reseau), cache: n.cache.saturating_sub(avant.cache) }
+    }
+}
+
+impl std::fmt::Display for Compteurs {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{} requêtes Riot, {} réponses du cache", self.reseau, self.cache)
+    }
+}
+
 pub struct RiotApi {
     cle: Option<String>,
     plateforme: String,
@@ -80,10 +117,20 @@ impl RiotApi {
 
     /// Requête générique. `hote` = "euw1" ou "europe"...
     fn requete(&self, hote: &str, chemin: &str, duree: Duree) -> Result<Value, ErreurApi> {
+        self.requete_options(hote, chemin, duree, true)
+    }
+
+    /// Comme `requete`, mais `lire_cache = false` force une réponse fraîche de Riot
+    /// (la réponse est quand même ÉCRITE dans le cache pour les suivants).
+    /// Sert après une partie : mes LP viennent de changer, le cache de 10 min est périmé.
+    fn requete_options(&self, hote: &str, chemin: &str, duree: Duree, lire_cache: bool) -> Result<Value, ErreurApi> {
         let url = format!("https://{hote}.api.riotgames.com{chemin}");
-        if let Some(texte) = self.cache.lire(&url) {
+        if let Some(texte) = self.cache.lire(&url).filter(|_| lire_cache) {
             match serde_json::from_str(&texte) {
-                Ok(v) => return Ok(v),
+                Ok(v) => {
+                    REPONSES_CACHE.fetch_add(1, Ordering::Relaxed);
+                    return Ok(v);
+                }
                 Err(_) => self.cache.oublier(&url), // fichier abîmé : on redemande à Riot
             }
         }
@@ -91,6 +138,7 @@ impl RiotApi {
         // 2 essais maximum : le 2e seulement si Riot a répondu 429 (trop de requêtes).
         for _ in 0..2 {
             self.limiteur.attendre();
+            REQUETES_RESEAU.fetch_add(1, Ordering::Relaxed);
             match crate::http::internet().get(&url).set("X-Riot-Token", cle).call() {
                 Ok(rep) => {
                     let texte = rep.into_string().map_err(|_| ErreurApi::Reseau)?;
@@ -138,6 +186,12 @@ impl RiotApi {
         self.requete(&self.plateforme, &chemin, Duree::Pendant(Duration::from_secs(600)))
     }
 
+    /// Rangs d'un joueur en ignorant le cache (mes LP juste après une partie).
+    pub fn rangs_frais(&self, puuid: &str) -> Result<Value, ErreurApi> {
+        let chemin = format!("/lol/league/v4/entries/by-puuid/{puuid}");
+        self.requete_options(&self.plateforme, &chemin, Duree::Pendant(Duration::from_secs(600)), false)
+    }
+
     /// Partie en cours d'un joueur (spectator-v5) : les 10 participants avec leur puuid.
     /// 404 (`Introuvable`) s'il n'est pas en partie.
     pub fn partie_en_cours(&self, puuid: &str) -> Result<Value, ErreurApi> {
@@ -179,6 +233,15 @@ impl RiotApi {
     pub fn ids_parties(&self, puuid: &str, nombre: u8) -> Result<Value, ErreurApi> {
         let chemin = format!("/lol/match/v5/matches/by-puuid/{puuid}/ids?count={nombre}");
         self.requete(region_routage(&self.plateforme), &chemin, Duree::Pendant(Duration::from_secs(120)))
+    }
+
+    /// Identifiants des parties (TOUTES files) terminées après `depuis` (secondes Unix,
+    /// 0 = pas de limite), les plus récentes d'abord. `nombre` : 100 au maximum (limite Riot).
+    /// Cache court (30 s) : la liste change à chaque partie jouée.
+    pub fn ids_parties_depuis(&self, puuid: &str, depuis: u64, nombre: u8) -> Result<Value, ErreurApi> {
+        let debut = if depuis > 0 { format!("&startTime={depuis}") } else { String::new() };
+        let chemin = format!("/lol/match/v5/matches/by-puuid/{puuid}/ids?count={}{debut}", nombre.min(100));
+        self.requete(region_routage(&self.plateforme), &chemin, Duree::Pendant(Duration::from_secs(30)))
     }
 
     /// Détail d'une partie terminée : ne change jamais -> cache permanent.

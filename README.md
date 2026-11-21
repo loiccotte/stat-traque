@@ -5,21 +5,32 @@ Objectif : peu de RAM, un seul `.exe`, utilisable par des amis.
 
 Projet personnel, gratuit, sans publicité ni monétisation.
 
+Mesures actuelles : exe de 0,95 Mo, ~9 Mo de RAM au repos, 0 requête au client LoL
+quand rien ne se passe (le client prévient l'app par WebSocket).
+
 ## Fonctions
-- Détection du champion sélectionné en champ select (API du client LoL, en local)
-- Tableau des joueurs pendant une partie : champions, KDA (API Live Client Data, en local)
+- Icône dans la barre des tâches (pas de fenêtre console)
+- Suivi des phases du client (salon, champ select, partie, fin) par événements
+- Détection du champion survolé / verrouillé et du rôle assigné en champ select
+- Tableau des joueurs pendant une partie : champion, niveau, KDA, CS, objets
+- Données du patch (Data Dragon) en cache : fonctionne hors ligne
+- Client API Riot avec limiteur de débit et cache (prêt pour les rangs et l'historique)
 - Gestion de la clé API Riot : stockage local, détection d'expiration
 
-## Fonctions prévues
-- Runes et sorts automatiques en champ select
-- Rangs et historique de parties (API Riot)
-- Items et niveaux des joueurs
+Liste complète et feuille de route : [docs/FEATURES.md](docs/FEATURES.md),
+méthode de travail : [docs/METHODE.md](docs/METHODE.md).
 
 ## Utilisation
 ```
-cargo run                          # lance l'app (le client LoL doit être ouvert)
+stat-traque                        # lance l'app (icône près de l'horloge)
+stat-traque --console              # lance l'app avec les messages dans une console
 stat-traque cle RGAPI-xxxxxxxx     # enregistre ta clé API Riot (stockée en local)
+stat-traque region euw1            # change de serveur (euw1, eun1, na1, kr...)
 ```
+Tout est rangé dans `%APPDATA%\stat-traque\` : clé, réglages, cache, journal de la dernière session.
+
+Développement : `cargo build --release`, puis `powershell -File scripts\mesure.ps1` pour
+vérifier les budgets de performance (taille, RAM, CPU, démarrage).
 La clé n'est jamais incluse dans le programme ni dans ce dépôt.
 
 ## Mention légale

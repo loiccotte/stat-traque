@@ -13,7 +13,7 @@ Priorité : P0 indispensable · P1 important · P2 bonus
 | F02 | Import auto des runes (champion + rôle) | 🔜 | P0 | une seule page "stat-traque", jamais de doublons | T11 |
 | F03 | Sorts d'invocateur auto (Flash côté D/F mémorisé) | 🔜 | P0 | respecte ta touche Flash habituelle | T12 |
 | F04 | Item sets : départ, core, situationnels | 🔜 | P1 | fichier natif du client, rien en overlay | T13 |
-| F05 | Détection du rôle assigné | 🔜 | P0 | — | T09 |
+| F05 | Détection du rôle assigné | ✅ | P0 | — | T09 |
 | F06 | Ordre de compétences | 🔜 | P1 | — | T14 |
 | F07 | Builds perso sauvegardés, prioritaires sur l'auto | 🔜 | P1 | Blitz écrase tes pages | T10 |
 | F08 | Mode « proposer » : rien n'est appliqué sans 1 clic | 🔜 | P1 | contrôle total | T14 |
@@ -24,7 +24,7 @@ Priorité : P0 indispensable · P1 important · P2 bonus
 ## 2. Chargement et partie en cours
 | ID | Feature | Statut | Prio | Mieux que Blitz | Tâche |
 |---|---|---|---|---|---|
-| F12 | Tableau des 10 joueurs : champion, KDA | ✅ | P0 | — | T17 |
+| F12 | Tableau des 10 joueurs : champion, KDA, CS, niveau | ✅ | P0 | — | T17 |
 | F13 | Rangs solo / flex des 10 joueurs | 🔜 | P0 | requêtes en cache, affichées en < 2 s | T15 |
 | F14 | Winrate du joueur sur son champion, nb de parties | 🔜 | P0 | — | T16 |
 | F15 | Badges : main, 1re partie sur le champ, série V/D | 🔜 | P1 | calculés en local | T16 |
@@ -42,13 +42,31 @@ Priorité : P0 indispensable · P1 important · P2 bonus
 | F23 | Suivi des LP et de la progression | 🔜 | P1 | — | T21 |
 | F24 | Récap partageable (texte / image) pour les amis | 💡 | P2 | — | T22 |
 
-## 4. Application
+## 4. Savoir des OTP (fiches matchup)
+L'idée : les one-tricks (OTP) tiennent des spreadsheets ou des sites (ex : fiches Zed de
+Zedking / koala) avec, pour chaque adversaire, la difficulté, les runes, les sorts, l'objet
+de départ et les conseils de lane. stat-traque affiche **la bonne fiche au bon moment**,
+sans chercher dans un onglet pendant le champ select.
+
+| ID | Feature | Statut | Prio | Mieux que Blitz | Tâche |
+|---|---|---|---|---|---|
+| F35 | Fiche du matchup affichée dès que l'adversaire de lane est connu | 🔜 | P1 | Blitz n'a que des stats, pas de conseils d'experts | T28 |
+| F36 | Import d'un Google Sheet (export CSV) ou d'un CSV, colonnes configurables | 🔜 | P1 | — | T26 |
+| F37 | Runes / sorts / objet de départ de la fiche appliqués en 1 clic | 🔜 | P1 | builds par matchup, pas génériques | T26 |
+| F38 | Format de fiche ouvert, partageable entre amis, auteur crédité | 🔜 | P1 | — | T26 |
+| F39 | Rappel de la fiche (3 conseils max) dans l'overlay au chargement | 💡 | P2 | — | T28 |
+| F40 | Mes propres notes de matchup, ajoutées après la partie | 💡 | P2 | — | T22 |
+
+Règles : les fiches sont importées par l'utilisateur lui-même, l'auteur est toujours affiché,
+et on demande l'accord de l'auteur avant de distribuer une fiche avec l'app.
+
+## 5. Application
 | ID | Feature | Statut | Prio | Mieux que Blitz | Tâche |
 |---|---|---|---|---|---|
 | F25 | Clé API : stockage local, détection d'expiration | ✅ | P0 | jamais dans le dépôt | T06 |
-| F26 | Icône tray, fenêtre créée seulement à l'ouverture | 🔜 | P0 | RAM < 15 Mo au repos | T07 |
-| F27 | Cache Data Dragon hors ligne, mis à jour par patch | 🔜 | P0 | démarrage instantané | T04 |
-| F28 | Multi-région (EUW, EUNE, NA, KR…) | 🔜 | P1 | — | T06 |
+| F26 | Icône tray (fait), fenêtre créée seulement à l'ouverture | 🔜 | P0 | RAM < 15 Mo au repos | T07 |
+| F27 | Cache Data Dragon hors ligne, mis à jour par patch | ✅ | P0 | démarrage instantané | T04 |
+| F28 | Multi-région (EUW, EUNE, NA, KR…) : `stat-traque region kr` | ✅ | P1 | — | T06 |
 | F29 | Multi-comptes (détecte le compte connecté) | 🔜 | P1 | aucun compte stat-traque | T09 |
 | F30 | Lancement avec Windows (option) | 🔜 | P1 | — | T25 |
 | F31 | Mise à jour automatique légère (GitHub Releases) | 🔜 | P1 | — | T25 |

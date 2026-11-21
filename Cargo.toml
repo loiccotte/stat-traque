@@ -1,19 +1,35 @@
-﻿[package]
+[package]
 name = "stat-traque"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-# reqwest : pour faire des requêtes HTTP (au client LoL et à Data Dragon).
-# native-tls = utilise le chiffrement de Windows (plus léger à compiler).
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls"] }
-# serde_json : pour lire le JSON renvoyé par le client.
+# ureq : client HTTP synchrone, SANS runtime async (tokio). Remplace reqwest :
+# moins de threads, moins de RAM, exe plus petit.
+ureq = { version = "2.12", default-features = false, features = ["json", "native-tls"] }
+# native-tls : chiffrement du système (schannel sous Windows) -> rien à embarquer.
+native-tls = "0.2"
+# tungstenite : WebSocket minimal, pour recevoir les événements du client LoL
+# au lieu de l'interroger toutes les secondes.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake", "native-tls"] }
 serde_json = "1"
-# base64 : le client LoL demande un mot de passe encodé en base64.
 base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+# Appels Windows bruts (icône de la barre des tâches). Pas de framework : coût ~0.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Console",
+] }
 
 # Pour un .exe le plus petit et rapide possible quand on compile en "release".
 [profile.release]
 opt-level = "s"
 lto = true
 strip = true
+codegen-units = 1   # meilleure optimisation globale (compile plus lentement)
+panic = "abort"     # pas de code de "déroulage" des erreurs : exe plus petit

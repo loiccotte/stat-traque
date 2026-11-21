@@ -54,6 +54,7 @@ const AIDE: &str = "stat-traque — alternative légère à Blitz
   stat-traque region euw1        change de serveur (euw1, eun1, na1, kr...)
   stat-traque --rejouer f.jsonl  rejoue une session enregistrée (sans LoL)
   stat-traque collecter 30       collecte 30 min de parties Master+ (stats de runes)
+  stat-traque tierlist [role]    tier list du patch (top, jungle, mid, adc, support)
   stat-traque aide               affiche cette aide";
 
 fn main() {
@@ -70,6 +71,10 @@ fn main() {
             tray::ouvrir_console();
             journal::initialiser();
             return collecte::collecter(minutes.parse().unwrap_or(30));
+        }
+        ["tierlist", reste @ ..] if reste.len() <= 1 => {
+            tray::ouvrir_console();
+            return stats::commande_tierlist(reste.first().copied());
         }
         ["aide" | "--help" | "-h", ..] => {
             tray::ouvrir_console();

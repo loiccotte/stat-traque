@@ -36,11 +36,34 @@ pub struct DonneesJeu {
     pub runes: HashMap<u16, Box<str>>,
     /// u32 : certains objets ont un identifiant à 6 chiffres.
     pub objets: HashMap<u32, Box<str>>,
+    /// Genre des objets qui comptent pour les builds : SEULEMENT les objets
+    /// légendaires et les bottes de la Faille (~120 entrées, ~2 Ko en RAM).
+    /// Vide si le cache est à l'ancien format (re-téléchargé dès qu'internet est là).
+    pub genres_objets: HashMap<u32, GenreObjet>,
+}
+
+/// Les objets qu'on compte dans les builds (stats.rs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum GenreObjet {
+    /// Objet « complet » : ne s'améliore en rien, cher, achetable sur la Faille.
+    Legendaire,
+    /// Bottes améliorées (pas les Bottes de base à 300 PO).
+    Bottes,
 }
 
 impl DonneesJeu {
     pub fn nom_champion(&self, id: u16) -> &str {
         self.champions.get(&id).map_or("inconnu", |c| &c.nom)
+    }
+
+    /// Légendaire, bottes, ou `None` pour tout le reste (composants, potions...).
+    pub fn genre_objet(&self, id: u32) -> Option<GenreObjet> {
+        self.genres_objets.get(&id).copied()
+    }
+
+    /// Nom affiché d'un objet (l'id en texte s'il est inconnu).
+    pub fn nom_objet(&self, id: u32) -> String {
+        self.objets.get(&id).map_or_else(|| id.to_string(), |n| n.to_string())
     }
 }
 
@@ -53,11 +76,12 @@ pub fn charger_en_fond(tx: Sender<Evenement>) {
             match charger() {
                 Some(d) => {
                     log!(
-                        "Data Dragon {} : {} champions, {} runes, {} objets ({} ms)",
+                        "Data Dragon {} : {} champions, {} runes, {} objets dont {} légendaires/bottes ({} ms)",
                         d.version,
                         d.champions.len(),
                         d.runes.len(),
                         d.objets.len(),
+                        d.genres_objets.len(),
                         debut.elapsed().as_millis()
                     );
                     let _ = tx.send(Evenement::DonneesPretes(Arc::new(d)));
@@ -85,16 +109,31 @@ fn complet(racine: &Path, version: &str) -> bool {
     racine.join(version).join("objets.tsv").exists()
 }
 
+/// Première ligne de `objets.tsv` au format actuel. Les anciens caches (format 1 :
+/// `id<TAB>nom` seulement) n'ont pas cette ligne -> on les re-télécharge.
+const FORMAT_OBJETS: &str = "#format\t2";
+
+/// Complet ET au format actuel. On ne lit que les premiers octets du fichier.
+fn a_jour(racine: &Path, version: &str) -> bool {
+    use std::io::Read;
+    let mut debut = [0u8; FORMAT_OBJETS.len()];
+    std::fs::File::open(racine.join(version).join("objets.tsv"))
+        .and_then(|mut f| f.read_exact(&mut debut))
+        .is_ok_and(|_| debut == FORMAT_OBJETS.as_bytes())
+}
+
 /// Choisit le patch à utiliser :
 ///  1. le dernier patch en ligne (téléchargé si besoin) ;
 ///  2. sinon (hors ligne, ou échec du téléchargement) le dernier patch complet sur le disque.
 fn choisir_version(racine: &Path) -> Option<String> {
     let fichier = racine.join("version.txt");
     if let Some(v) = version_en_ligne() {
-        if complet(racine, &v) {
+        // Patch déjà là mais à l'ancien format : on le re-télécharge comme un nouveau
+        // patch (en cas d'échec, le repli plus bas garde l'ancien, encore lisible).
+        if a_jour(racine, &v) {
             return Some(v);
         }
-        log!("Nouveau patch {v} : téléchargement des données...");
+        log!("Patch {v} : téléchargement des données...");
         if telecharger(&v, &racine.join(&v)).is_some() {
             // version.txt n'est écrit QU'APRÈS un téléchargement réussi.
             let _ = std::fs::write(&fichier, &v);
@@ -121,9 +160,47 @@ pub fn charger() -> Option<DonneesJeu> {
             .collect(),
         sorts: lire_tsv(&lire("sorts.tsv")).map(|(k, v)| (k, v.into())).collect(),
         runes: lire_tsv(&lire("runes.tsv")).map(|(k, v)| (k, v.into())).collect(),
-        objets: lire_tsv(&lire("objets.tsv")).map(|(k, v)| (k, v.into())).collect(),
+        objets: lire_tsv(&lire("objets.tsv")).map(|(k, v)| (k, nom_objet_tsv(v).into())).collect(),
+        genres_objets: lire_tsv(&lire("objets.tsv")).filter_map(|(k, v)| Some((k, genre_objet_tsv(v)?))).collect(),
         version,
     })
+}
+
+// ---------- objets.tsv (format 2) ----------
+// Une ligne par objet : id<TAB>nom<TAB>prix total<TAB>profondeur<TAB>drapeaux
+// Drapeaux (lettres, "-" si aucune) :
+//   F = final (le champ `into` de Riot est vide : il ne s'améliore en rien)
+//   A = achetable sur la Faille (carte 11, en boutique, pas réservé à un champion)
+//   B = bottes (tag "Boots"), sauf les Bottes de base (elles n'ont pas de `from`)
+//   C = consommable (potions, élixirs...)
+// On garde les infos brutes (prix, profondeur) : la règle « légendaire » peut
+// évoluer sans re-télécharger.
+
+/// Prix minimum d'un objet légendaire (les moins chers coûtent ~2 200 PO ;
+/// les objets « épiques » intermédiaires coûtent moins de 1 600 PO).
+const PRIX_MIN_LEGENDAIRE: u32 = 2000;
+
+/// Colonne « nom » d'une ligne sans l'id (ancien et nouveau format).
+fn nom_objet_tsv(reste: &str) -> &str {
+    reste.split('\t').next().unwrap_or(reste)
+}
+
+/// Genre d'un objet d'après sa ligne sans l'id. `None` pour l'ancien format.
+fn genre_objet_tsv(reste: &str) -> Option<GenreObjet> {
+    let c: Vec<&str> = reste.split('\t').collect();
+    let prix: u32 = c.get(1)?.parse().ok()?;
+    let drapeaux = *c.get(3)?;
+    let a = |lettre: char| drapeaux.contains(lettre);
+    if !a('A') || a('C') {
+        return None;
+    }
+    if a('B') {
+        Some(GenreObjet::Bottes)
+    } else if a('F') && prix >= PRIX_MIN_LEGENDAIRE {
+        Some(GenreObjet::Legendaire)
+    } else {
+        None
+    }
 }
 
 /// Lit des lignes `id<TAB>reste`.
@@ -180,14 +257,43 @@ fn tsv_par_cle(v: &Value) -> Vec<String> {
         .collect()
 }
 
-/// item.json : {"data": {"3020": {"name": "..."}}} (l'id est la clé).
+/// item.json : {"data": {"3020": {"name": "...", "gold": {"total": 1100, "purchasable": true},
+///   "tags": ["Boots"], "from": [...], "into": [...], "depth": 2, "maps": {"11": true}}}}
+/// (l'id est la clé). Écrit le format 2 décrit plus haut.
 fn tsv_objets(v: &Value) -> Vec<String> {
-    v["data"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .filter_map(|(id, o)| Some(format!("{id}\t{}", o["name"].as_str()?)))
-        .collect()
+    let mut lignes = vec![FORMAT_OBJETS.to_string()];
+    lignes.extend(v["data"].as_object().into_iter().flatten().filter_map(|(id, o)| {
+        // Champ absent ou liste vide : même chose pour nous.
+        let vide = |cle: &str| o[cle].as_array().is_none_or(|t| t.is_empty());
+        let reserve = |cle: &str| o[cle].as_str().is_some_and(|s| !s.is_empty());
+        let achetable = o["gold"]["purchasable"] != false
+            && o["maps"]["11"] == true
+            && o["inStore"] != false
+            && !reserve("requiredChampion")
+            && !reserve("requiredAlly");
+        let a_tag = |t: &str| o["tags"].as_array().is_some_and(|ts| ts.iter().any(|x| x == t));
+        let mut drapeaux = String::new();
+        for (oui, lettre) in [
+            (vide("into"), 'F'),
+            (achetable, 'A'),
+            (a_tag("Boots") && !vide("from"), 'B'),
+            (a_tag("Consumable") || o["consumed"] == true, 'C'),
+        ] {
+            if oui {
+                drapeaux.push(lettre);
+            }
+        }
+        if drapeaux.is_empty() {
+            drapeaux.push('-');
+        }
+        Some(format!(
+            "{id}\t{}\t{}\t{}\t{drapeaux}",
+            o["name"].as_str()?,
+            o["gold"]["total"].as_u64().unwrap_or(0),
+            o["depth"].as_u64().unwrap_or(1)
+        ))
+    }));
+    lignes
 }
 
 /// runesReforged.json : [{id, name, slots: [{runes: [{id, name}]}]}]
@@ -235,5 +341,50 @@ mod tests {
         )
         .unwrap();
         assert_eq!(tsv_runes(&v), vec!["8100\tDomination", "8112\tÉlectrocution"]);
+    }
+
+    #[test]
+    fn classe_les_objets() {
+        let v: Value = serde_json::from_str(
+            r#"{"data":{
+              "3020":{"name":"Chaussures du sorcier","gold":{"total":1100,"purchasable":true},"tags":["Boots"],
+                      "from":["1001"],"into":["3175"],"depth":2,"maps":{"11":true}},
+              "1001":{"name":"Bottes","gold":{"total":300,"purchasable":true},"tags":["Boots"],
+                      "into":["3020"],"maps":{"11":true}},
+              "3089":{"name":"Coiffe de Rabadon","gold":{"total":3600,"purchasable":true},"tags":["SpellDamage"],
+                      "from":["1058"],"depth":3,"maps":{"11":true}},
+              "3108":{"name":"Codex","gold":{"total":900,"purchasable":true},"into":["3089"],"maps":{"11":true}},
+              "2003":{"name":"Potion","gold":{"total":50,"purchasable":true},"tags":["Consumable"],"maps":{"11":true}},
+              "7002":{"name":"Objet d'Ornn","gold":{"total":3200,"purchasable":false},"requiredAlly":"Ornn","maps":{"11":true}},
+              "443089":{"name":"Rabadon (Arena)","gold":{"total":3600,"purchasable":true},"maps":{"11":false,"30":true}}
+            }}"#,
+        )
+        .unwrap();
+        let lignes = tsv_objets(&v);
+        assert_eq!(lignes[0], FORMAT_OBJETS);
+        assert!(lignes.contains(&"3089\tCoiffe de Rabadon\t3600\t3\tFA".to_string()), "{lignes:?}");
+        let texte = lignes.join("\n");
+        let genres: HashMap<u32, GenreObjet> =
+            lire_tsv(&texte).filter_map(|(k, r)| Some((k, genre_objet_tsv(r)?))).collect();
+        assert_eq!(genres.get(&3089), Some(&GenreObjet::Legendaire));
+        assert_eq!(genres.get(&3020), Some(&GenreObjet::Bottes));
+        assert_eq!(genres.len(), 2, "ni Bottes de base, ni composant, ni potion, ni Ornn, ni Arena : {genres:?}");
+        // Le nom se lit pareil dans les deux formats.
+        let nom = lire_tsv::<u32>(&texte).find(|(k, _)| *k == 3089).map(|(_, r)| nom_objet_tsv(r));
+        assert_eq!(nom, Some("Coiffe de Rabadon"));
+        assert_eq!(nom_objet_tsv("Ancien nom"), "Ancien nom");
+        assert_eq!(genre_objet_tsv("Ancien nom"), None);
+    }
+
+    #[test]
+    fn detecte_l_ancien_format_du_cache() {
+        let racine = std::env::temp_dir().join(format!("stat-traque-test-dd-{}", std::process::id()));
+        let dossier = racine.join("16.1.1");
+        std::fs::create_dir_all(&dossier).unwrap();
+        std::fs::write(dossier.join("objets.tsv"), "3089\tCoiffe").unwrap();
+        assert!(complet(&racine, "16.1.1") && !a_jour(&racine, "16.1.1"));
+        std::fs::write(dossier.join("objets.tsv"), format!("{FORMAT_OBJETS}\n3089\tCoiffe\t3600\t3\tFA")).unwrap();
+        assert!(a_jour(&racine, "16.1.1"));
+        let _ = std::fs::remove_dir_all(&racine);
     }
 }

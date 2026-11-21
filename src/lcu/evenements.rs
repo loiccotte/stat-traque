@@ -142,7 +142,8 @@ fn etat_initial(lcu: &Lcu, tx: &Sender<Evenement>) -> Option<CleChampSelect> {
     if let Some(moi) = lcu.get("/lol-summoner/v1/current-summoner") {
         noter_get("/lol-summoner/v1/current-summoner", &moi);
         if let Some(puuid) = moi["puuid"].as_str().filter(|p| !p.is_empty()) {
-            let _ = tx.send(Evenement::Moi { puuid: puuid.into() });
+            let summoner_id = moi["summonerId"].as_u64().filter(|&id| id != 0);
+            let _ = tx.send(Evenement::Moi { puuid: puuid.into(), summoner_id });
         }
     }
     let phase = lcu

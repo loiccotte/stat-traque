@@ -28,7 +28,8 @@ pub enum Evenement {
     /// Nouvel état de la partie en cours (API du jeu, port 2999).
     Partie(InstantanePartie),
     /// Mon compte (lu au client à la connexion) : sert à trouver ma partie en cours.
-    Moi { puuid: Box<str> },
+    /// `summoner_id` : sert aux item sets du client (`/lol-item-sets/v1/item-sets/{id}/sets`).
+    Moi { puuid: Box<str>, summoner_id: Option<u64> },
     /// Rangs des joueurs (alliés en champ select non classé, ou les 10 en partie).
     Rangs(Vec<crate::rangs::InfoJoueur>),
     /// Demande d'arrêt (menu "Quitter" de l'icône).

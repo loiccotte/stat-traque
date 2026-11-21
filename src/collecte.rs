@@ -1,7 +1,8 @@
 //! Collecte de statistiques : `stat-traque collecter 60` (durée en minutes).
 //!
 //! Lit des parties classées solo/duo de joueurs Challenger, Grandmaster puis Master,
-//! garde UNIQUEMENT celles du patch actuel et compte runes et sorts (stats.rs).
+//! garde UNIQUEMENT celles du patch actuel et compte runes, sorts, matchups de lane,
+//! objets légendaires / bottes et bans (stats.rs).
 //! Ne garde pas le JSON des parties : seulement les comptes, et la liste des parties
 //! déjà vues (pour ne jamais compter deux fois la même).
 //!
@@ -29,6 +30,11 @@ pub fn collecter(minutes: u64) {
         log!("Collecte impossible : version du patch inconnue (Data Dragon).");
         return;
     };
+    if donnees.genres_objets.is_empty() {
+        // Cache Data Dragon à l'ancien format et pas d'internet : on ne sait pas
+        // quels objets sont légendaires, ils ne seront pas comptés.
+        log!("Attention : genres des objets inconnus (cache Data Dragon ancien), objets non comptés.");
+    }
     let patch = stats::patch_court(&donnees.version);
     let chemin = stats::chemin_patch(&patch);
     let chemin_vus = stats::dossier().join(format!("vus-{patch}-{}.txt", api.plateforme()));
@@ -62,7 +68,7 @@ pub fn collecter(minutes: u64) {
                     continue;
                 }
                 match api.partie_sans_cache(id) {
-                    Ok(p) if s.ajouter_partie(&p) => {
+                    Ok(p) if s.ajouter_partie(&p, &|id| donnees.genre_objet(id)) => {
                         ajoutees += 1;
                         if ajoutees.is_multiple_of(50) {
                             sauver(&s, &vus);

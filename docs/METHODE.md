@@ -37,22 +37,22 @@ Les agents sont définis dans `.claude/agents/` ; les règles communes dans `CLA
 | T04 | Cache Data Dragon versionné (champions, runes, items, sorts) | dev-donnees | T02, T03 | 0 requête si patch inchangé | ✅ |
 | T05 | WebSocket LCU événementiel (`OnJsonApiEvent`) | dev-lcu | T02 | plus aucun polling LCU | ✅ |
 | T06 | Client Riot API : rate limiter, cache, régions | dev-riot-api | T02, T03 | respecte 20/s et 100/2 min | ✅ |
-| T07 | Squelette UI : tray + fenêtre à la demande | dev-ui | T01 | < 15 Mo au repos | 🟡 tray fait, fenêtre à faire |
+| T07 | Squelette UI : tray + fenêtre à la demande | dev-ui | T01 | < 15 Mo au repos | 🟡 fait, RAM après fermeture à mesurer sous Windows (voir Mesures T07) |
 | T08 | Banc de mesure perf (RAM, taille, démarrage) | perf | T01 | script reproductible | ✅ |
 | T09 | Machine d'états gameflow (lobby → champ select → partie → fin) | dev-lcu | T05 | transitions loguées | ✅ |
 | T10 | Source des builds / runes (**décision à prendre**) | dev-donnees | T04, T06 | format interne défini |  |
 | T11 | Import auto des runes | dev-lcu | T09, T10 | 1 page gérée, pas de doublon |  |
 | T12 | Sorts d'invocateur auto | dev-lcu | T09, T10 | Flash du bon côté |  |
 | T13 | Import des item sets | dev-lcu | T09, T10 | visible dans la boutique |  |
-| T14 | Écran champ select | dev-ui | T07, T11 | mode proposer / appliquer |  |
+| T14 | Écran champ select | dev-ui | T07, T11 | mode proposer / appliquer | 🟡 affichage fait (compos, picks, runes, matchups, objets) |
 | T15 | Rangs des 10 joueurs | dev-riot-api | T06, T09 | affichés en < 2 s |  |
 | T16 | Profil rapide : winrate champion, badges | dev-riot-api | T15 | requêtes bornées et en cache |  |
-| T17 | Écran partie en cours | dev-ui | T07, T16 | rafraîchi sur événement |  |
-| T18 | Overlay en jeu click-through | dev-ui | T17 | < 40 Mo en partie |  |
+| T17 | Écran partie en cours | dev-ui | T07, T16 | rafraîchi sur événement | ✅ |
+| T18 | Overlay en jeu click-through | dev-ui | T17 | < 40 Mo en partie | 🟡 fait, à vérifier en jeu sous Windows |
 | T19 | Base locale des parties | dev-donnees | T03, T06 | résumé compact par partie (pas le JSON) | ✅ |
-| T20 | Écran post-game | dev-ui | T07, T19 | comparaison à ta moyenne |  |
+| T20 | Écran post-game | dev-ui | T07, T19 | comparaison à ta moyenne | ✅ (onglet Historique) |
 | T21 | Stats perso et suivi LP | dev-donnees | T19 | calculs hors ligne | ✅ |
-| T22 | Écran historique / profil | dev-ui | T21 | filtres champion / rôle |  |
+| T22 | Écran historique / profil | dev-ui | T21 | filtres champion / rôle | 🟡 liste + stats par champion/rôle, filtres à faire |
 | T23 | Tests avec réponses LCU / Riot simulées | qualite | T05, T06 | `cargo test` vert | 🟡 15 tests unitaires |
 | T24 | Audit conformité Riot | qualite | T13, T18 | checklist validée |  |
 | T25 | Packaging : .exe unique, mise à jour, démarrage Windows | qualite | T08, T24 | release GitHub | 🟡 release, mise à jour, démarrage faits ; audit T24 à faire |
@@ -95,4 +95,29 @@ résumé compact des parties au lieu du JSON match-v5 brut (T19).
   Pour les autres : Blitz agrège des millions de parties sur ses serveurs.
   Options : (a) agréger nous-mêmes via match-v5 sur des joueurs haut classement (lent, limité par la clé dev),
   (b) builds perso + presets maintenus à la main, (c) source publique tierce (vérifier les conditions d'utilisation).
-- **T07 – bibliothèque UI** : `egui`/`eframe` (simple, ~5 Mo) vs Win32 natif (le plus léger, plus long à écrire).
+- **T07 – bibliothèque UI** : décidé **egui/eframe**, rendu OpenGL (`glow`), sans options par défaut.
+  Si la RAM après fermeture dépasse le budget sous Windows (pilote OpenGL resté chargé),
+  plan B : la fenêtre dans un processus enfant (`stat-traque --fenetre`) qui meurt à la fermeture.
+
+## Mesures T07 (fenêtre egui + overlay)
+Architecture : un thread « fenetre » créé au démarrage, endormi (Condvar) tant que rien n'est
+demandé ; `eframe::run_native` (run_and_return, winit `with_any_thread`) crée fenêtre + contexte
+OpenGL à l'ouverture et détruit tout à la fermeture. Une seule fenêtre à la fois (principale OU
+overlay). Redessin uniquement sur changement d'état (`affichage::quand_ca_change`) ou action de
+la souris ; animations coupées.
+
+| Mesure | Valeur | Budget |
+|---|---|---|
+| Taille .exe Windows (avant -> après eframe) | 1,09 Mo -> 5,18 Mo (+4,1 Mo) ; 5,47 Mo avec toutes les features fusionnées | < 20 Mo |
+| CPU fenêtre ouverte, rien ne change | 0,00 % | ~0 % |
+| CPU overlay affiché, rien ne change | 0,00 % | ~0 % |
+| RAM privée au repos, avant toute ouverture | 0,7 Mo (Linux) | < 15 Mo |
+| RAM privée fenêtre ouverte | 37,8 Mo (Linux, Mesa llvmpipe = rendu logiciel) | — |
+| RAM privée après fermeture | 34 Mo (Linux, llvmpipe) : le pilote OpenGL reste chargé | < 15 Mo ⚠ |
+| RAM privée overlay | 50,6 Mo (Linux, llvmpipe) | < 40 Mo ⚠ |
+
+Les chiffres Linux viennent de Xvfb + Mesa **llvmpipe** (rendu OpenGL logiciel, très gourmand :
+compilateur LLVM en mémoire). egui lui-même pèse ~4 Mo (37,8 ouverte - 34 fermée). **La mesure
+qui compte est sous Windows avec le vrai pilote graphique** : `stat-traque essai-fenetre`
+(affiche RAM privée / totale et CPU à chaque étape, ~45 s, sans LoL). Si « Fenêtre fermée » ou
+« Overlay » dépasse le budget : plan B processus enfant (voir Décisions ouvertes).

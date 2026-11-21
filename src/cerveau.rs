@@ -94,7 +94,13 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                 affichage::modifier(|e| e.client_connecte = false);
                 crate::tray::definir_etat("En attente du client LoL");
             }
-            Evenement::Moi { puuid } => etat.mon_puuid = Some(puuid),
+            Evenement::Moi { puuid } => {
+                // Mon puuid est connu : synchro de mon historique en arrière-plan.
+                if let Some(api) = &etat.api {
+                    crate::historique::lancer_synchro(api.clone(), puuid.clone(), false, tx.clone());
+                }
+                etat.mon_puuid = Some(puuid);
+            }
             Evenement::Phase(p) => changer_phase(&mut etat, p, &tx),
             Evenement::ChampSelect(cs) => match etat.donnees.clone() {
                 Some(d) => champ_select(&mut etat, &d, cs, &tx),
@@ -122,6 +128,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                 }
                 affichage::modifier(|e| e.partie = Some(p));
             }
+            Evenement::Historique(maj) => crate::historique::publier(*maj, etat.donnees.as_deref()),
             Evenement::Quitter => break,
         }
     }
@@ -143,6 +150,12 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         });
     }
     affichage::modifier(|e| e.phase = Some(p));
+    // Fin de partie : on récupère la partie chez Riot (historique + récap + LP).
+    if p == Phase::EndOfGame {
+        if let (Some(api), Some(puuid)) = (&etat.api, &etat.mon_puuid) {
+            crate::historique::lancer_synchro(api.clone(), puuid.clone(), true, tx.clone());
+        }
+    }
     // Rangs des 10 joueurs, une fois par partie.
     if p.en_partie() && !etat.partie_scoutee {
         if let (Some(api), Some(puuid)) = (&etat.api, &etat.mon_puuid) {
@@ -331,7 +344,12 @@ fn afficher_rangs(d: &DonneesJeu, joueurs: &[InfoJoueur]) {
         };
         let maitrise = j.maitrise.map_or(String::new(), |(n, p)| format!(" · maîtrise {n} ({} k pts)", p / 1000));
         let moi = if j.moi { " (toi)" } else { "" };
-        log!("{equipe} {:<13} {solo}{flex}{meilleur}{maitrise}  {}{moi}", d.nom_champion(j.champion), j.nom);
+        let badges = if j.badges.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", j.badges.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))
+        };
+        log!("{equipe} {:<13} {solo}{flex}{meilleur}{maitrise}  {}{moi}{badges}", d.nom_champion(j.champion), j.nom);
     }
 }
 

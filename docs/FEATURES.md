@@ -25,21 +25,21 @@ Priorité : P0 indispensable · P1 important · P2 bonus
 | ID | Feature | Statut | Prio | Mieux que Blitz | Tâche |
 |---|---|---|---|---|---|
 | F12 | Tableau des 10 joueurs : champion, KDA, CS, niveau | ✅ | P0 | — | T17 |
-| F13 | Rangs solo / flex des 10 joueurs | 🔜 | P0 | requêtes en cache, affichées en < 2 s | T15 |
+| F13 | Rangs solo / flex des 10 joueurs | ✅ | P0 | requêtes en cache, affichées en < 2 s | T15 |
 | F14 | Winrate du joueur sur son champion, nb de parties | 🔜 | P0 | — | T16 |
-| F15 | Badges : main, 1re partie sur le champ, série V/D | 🔜 | P1 | calculés en local | T16 |
+| F15 | Badges : main, 1re partie sur le champ, série V/D | ✅ | P1 | calculés en local (série de défaites : seulement pour toi, base locale) | T16 |
 | F16 | Items et niveaux en direct | 🔜 | P1 | API locale 2999 seulement en partie | T17 |
 | F17 | Overlay click-through, ouvert/fermé par raccourci | 🔜 | P1 | fenêtre transparente, aucune injection | T18 |
-| F18 | Détection des duos (premades) | 💡 | P2 | — | T16 |
+| F18 | Détection des duos (premades) | ✅ | P2 | 1 requête par joueur (ids des 20 dernières parties en commun) | T16 |
 
 ## 3. Après la partie
 | ID | Feature | Statut | Prio | Mieux que Blitz | Tâche |
 |---|---|---|---|---|---|
-| F19 | Récap : KDA, CS/min, dégâts, vision, or | 🔜 | P0 | — | T20 |
-| F20 | Comparaison à **ta** moyenne sur ce champion | 🔜 | P1 | plus parlant qu'une moyenne de rang | T20 |
-| F21 | Historique des parties avec filtres | 🔜 | P0 | cache permanent, consultable hors ligne | T22 |
-| F22 | Stats perso par champion / rôle / patch | 🔜 | P1 | — | T21 |
-| F23 | Suivi des LP et de la progression | 🔜 | P1 | — | T21 |
+| F19 | Récap : KDA, CS/min, dégâts, vision, or, LP +/- | ✅ | P0 | — | T20 |
+| F20 | Comparaison à **ta** moyenne sur ce champion | ✅ | P1 | plus parlant qu'une moyenne de rang | T20 |
+| F21 | Historique des parties avec filtres | ✅ | P0 | base locale TSV (~100 octets / partie), hors ligne ; filtres = interface | T22 |
+| F22 | Stats perso par champion / rôle / patch | ✅ | P1 | — | T21 |
+| F23 | Suivi des LP et de la progression | ✅ | P1 | LP par partie, changements de division gérés | T21 |
 | F24 | Récap partageable (texte / image) pour les amis | 💡 | P2 | — | T22 |
 
 ## 4. Savoir des OTP (fiches matchup)

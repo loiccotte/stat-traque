@@ -61,6 +61,15 @@ pub struct EtatAffichage {
     pub rangs: Vec<InfoJoueur>,
     pub partie: Option<InstantanePartie>,
     pub messages: Vec<String>,
+    // --- Historique et stats perso (feature/historique, voir historique.rs) ---
+    /// Mes 20 dernières parties, plus récentes d'abord (champion = id : nom via Data Dragon).
+    pub historique: Vec<crate::historique::ResumePartie>,
+    /// Mes moyennes par champion / rôle / patch / file.
+    pub stats_perso: Option<crate::historique::StatsPerso>,
+    /// Rang actuel, meilleur rang, LP sur 7 jours, derniers points (graphique).
+    pub progression_lp: Option<crate::historique::ProgressionLp>,
+    /// Récap de la dernière partie, comparé à ma moyenne sur ce champion.
+    pub recap: Option<crate::historique::Recap>,
 }
 
 static ETAT: Mutex<Option<EtatAffichage>> = Mutex::new(None);

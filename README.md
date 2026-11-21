@@ -5,7 +5,7 @@ Objectif : peu de RAM, un seul `.exe`, utilisable par des amis.
 
 Projet personnel, gratuit, sans publicité ni monétisation.
 
-Mesures actuelles : exe de 0,95 Mo, ~9 Mo de RAM au repos, 0 requête au client LoL
+Mesures actuelles : exe de 0,9 Mo, ~9 Mo de RAM au repos, 0 requête au client LoL
 quand rien ne se passe (le client prévient l'app par WebSocket).
 
 ## Fonctions

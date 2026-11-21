@@ -35,7 +35,8 @@ pub struct DonneesJeu {
     #[allow(dead_code)] // utilisé par la partie joueur (sorts auto)
     pub sorts: HashMap<u16, Box<str>>,
     pub runes: HashMap<u16, Box<str>>,
-    pub objets: HashMap<u16, Box<str>>,
+    /// u32 : certains objets ont un identifiant à 6 chiffres.
+    pub objets: HashMap<u32, Box<str>>,
 }
 
 impl DonneesJeu {
@@ -68,33 +69,49 @@ pub fn charger_en_fond(tx: Sender<Evenement>) {
         .expect("impossible de lancer le thread Data Dragon");
 }
 
-/// Version la plus récente : demandée à Riot, sinon la dernière connue (hors ligne).
-fn version_actuelle(dossier: &Path) -> Option<String> {
-    let fichier = dossier.join("version.txt");
-    let en_ligne = crate::http::internet()
+/// Version la plus récente selon Riot (`None` si pas d'internet).
+fn version_en_ligne() -> Option<String> {
+    crate::http::internet()
         .get(&format!("{CDN}/api/versions.json"))
         .call()
-        .ok()
-        .and_then(|r| r.into_json::<Value>().ok())
-        .and_then(|v| v[0].as_str().map(String::from));
-    match en_ligne {
-        Some(v) => {
-            let _ = std::fs::write(&fichier, &v);
-            Some(v)
+        .ok()?
+        .into_json::<Value>()
+        .ok()?[0]
+        .as_str()
+        .map(String::from)
+}
+
+/// Un patch est complet si `objets.tsv` (écrit en dernier) existe.
+fn complet(racine: &Path, version: &str) -> bool {
+    racine.join(version).join("objets.tsv").exists()
+}
+
+/// Choisit le patch à utiliser :
+///  1. le dernier patch en ligne (téléchargé si besoin) ;
+///  2. sinon (hors ligne, ou échec du téléchargement) le dernier patch complet sur le disque.
+fn choisir_version(racine: &Path) -> Option<String> {
+    let fichier = racine.join("version.txt");
+    if let Some(v) = version_en_ligne() {
+        if complet(racine, &v) {
+            return Some(v);
         }
-        None => std::fs::read_to_string(fichier).ok().map(|s| s.trim().to_string()),
+        log!("Nouveau patch {v} : téléchargement des données...");
+        if telecharger(&v, &racine.join(&v)).is_some() {
+            // version.txt n'est écrit QU'APRÈS un téléchargement réussi.
+            let _ = std::fs::write(&fichier, &v);
+            nettoyer_anciens_patchs(racine, &v);
+            return Some(v);
+        }
+        log!("Téléchargement du patch {v} raté : on garde le patch précédent.");
     }
+    let v = std::fs::read_to_string(fichier).ok()?.trim().to_string();
+    complet(racine, &v).then_some(v)
 }
 
 pub fn charger() -> Option<DonneesJeu> {
     let racine = crate::stockage::dossier_cache("ddragon");
-    let version = version_actuelle(&racine)?;
+    let version = choisir_version(&racine)?;
     let dossier = racine.join(&version);
-    if !dossier.join("objets.tsv").exists() {
-        log!("Nouveau patch {version} : téléchargement des données...");
-        telecharger(&version, &dossier)?;
-        nettoyer_anciens_patchs(&racine, &version);
-    }
     let lire = |nom: &str| std::fs::read_to_string(dossier.join(nom)).unwrap_or_default();
     Some(DonneesJeu {
         champions: lire_tsv(&lire("champions.tsv"))
@@ -111,7 +128,7 @@ pub fn charger() -> Option<DonneesJeu> {
 }
 
 /// Lit des lignes `id<TAB>reste`.
-fn lire_tsv(texte: &str) -> impl Iterator<Item = (u16, &str)> {
+fn lire_tsv<K: std::str::FromStr>(texte: &str) -> impl Iterator<Item = (K, &str)> {
     texte.lines().filter_map(|l| {
         let (id, reste) = l.split_once('\t')?;
         Some((id.parse().ok()?, reste))
@@ -123,20 +140,24 @@ fn json(url: &str) -> Option<Value> {
 }
 
 /// Télécharge les 4 fichiers du patch et les convertit en petits TSV.
+/// UN fichier à la fois : téléchargé, converti, écrit puis libéré
+/// (item.json pèse plusieurs Mo une fois décodé : on n'en garde jamais deux en RAM).
 fn telecharger(version: &str, dossier: &Path) -> Option<()> {
     let base = format!("{CDN}/cdn/{version}/data/{LANGUE}");
-    let champions = json(&format!("{base}/champion.json"))?;
-    let sorts = json(&format!("{base}/summoner.json"))?;
-    let runes = json(&format!("{base}/runesReforged.json"))?;
-    let objets = json(&format!("{base}/item.json"))?;
-
     std::fs::create_dir_all(dossier).ok()?;
-    let ecrire = |nom: &str, lignes: Vec<String>| std::fs::write(dossier.join(nom), lignes.join("\n"));
-    ecrire("champions.tsv", tsv_champions(&champions)).ok()?;
-    ecrire("sorts.tsv", tsv_par_cle(&sorts)).ok()?;
-    ecrire("runes.tsv", tsv_runes(&runes)).ok()?;
-    // objets.tsv en dernier : sa présence signifie "patch complet".
-    ecrire("objets.tsv", tsv_objets(&objets)).ok()?;
+    // (fichier Riot, fichier TSV, fonction de conversion)
+    type Etape = (&'static str, &'static str, fn(&Value) -> Vec<String>);
+    let etapes: [Etape; 4] = [
+        ("champion.json", "champions.tsv", tsv_champions),
+        ("summoner.json", "sorts.tsv", tsv_par_cle),
+        ("runesReforged.json", "runes.tsv", tsv_runes),
+        // objets.tsv en dernier : sa présence signifie "patch complet".
+        ("item.json", "objets.tsv", tsv_objets),
+    ];
+    for (source, cible, convertir) in etapes {
+        let lignes = convertir(&json(&format!("{base}/{source}"))?);
+        std::fs::write(dossier.join(cible), lignes.join("\n")).ok()?;
+    }
     Some(())
 }
 

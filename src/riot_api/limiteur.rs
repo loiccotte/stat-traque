@@ -31,9 +31,12 @@ impl Limiteur {
         Self { fenetres: Mutex::new(fenetres), bloque_jusqua: Mutex::new(None) }
     }
 
-    /// Les limites d'une clé de développement Riot.
-    pub fn cle_dev() -> Self {
-        Self::nouveau(&[(20, Duration::from_secs(1)), (100, Duration::from_secs(120))])
+    /// LE limiteur de l'app, partagé par tous : les limites Riot sont par clé,
+    /// pas par objet. Deux limiteurs séparés laisseraient passer deux fois trop de requêtes.
+    pub fn global() -> &'static Limiteur {
+        static GLOBAL: std::sync::OnceLock<Limiteur> = std::sync::OnceLock::new();
+        // Limites d'une clé de développement Riot.
+        GLOBAL.get_or_init(|| Self::nouveau(&[(20, Duration::from_secs(1)), (100, Duration::from_secs(120))]))
     }
 
     /// Combien de temps attendre avant d'avoir le droit de faire une requête ?

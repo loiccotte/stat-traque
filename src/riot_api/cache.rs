@@ -4,9 +4,16 @@
 //!
 //! Un fichier par réponse dans `cache/riot/`, nommé par l'empreinte de l'URL.
 //! 1re ligne : date d'expiration (secondes Unix, 0 = jamais). Reste : le JSON.
+//!
+//! Pour que le dossier ne grossisse pas sans fin, `nettoyer()` (au démarrage) supprime
+//! les réponses expirées et les parties non relues depuis `GARDER_PARTIES_JOURS` jours.
+//! (La base locale des parties, T19, gardera ensuite un résumé compact de CHAQUE partie.)
 
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Les parties en cache « pour toujours » non utilisées depuis ce délai sont supprimées.
+const GARDER_PARTIES_JOURS: u64 = 30;
 
 pub struct Cache {
     dossier: PathBuf,
@@ -46,12 +53,58 @@ impl Cache {
         (expire == 0 || expire > maintenant()).then(|| corps.to_string())
     }
 
+    /// Écrit une réponse. Durée nulle = rien n'est écrit (ex : vérification de la clé).
+    /// Écriture « atomique » : fichier temporaire puis renommage, donc jamais de
+    /// fichier à moitié écrit si l'app est coupée au mauvais moment.
     pub fn ecrire(&self, cle: &str, corps: &str, duree: Duree) {
         let expire = match duree {
             Duree::Toujours => 0,
+            Duree::Pendant(d) if d.is_zero() => return,
             Duree::Pendant(d) => maintenant() + d.as_secs(),
         };
-        let _ = std::fs::write(self.chemin(cle), format!("{expire}\n{corps}"));
+        let chemin = self.chemin(cle);
+        let temporaire = chemin.with_extension("tmp");
+        if std::fs::write(&temporaire, format!("{expire}\n{corps}")).is_ok() {
+            let _ = std::fs::rename(&temporaire, &chemin);
+        }
+    }
+
+    /// Supprime une réponse (ex : fichier abîmé).
+    pub fn oublier(&self, cle: &str) {
+        let _ = std::fs::remove_file(self.chemin(cle));
+    }
+
+    /// Ménage : réponses expirées, fichiers temporaires, vieilles parties.
+    /// Ne lit que la 1re ligne de chaque fichier. Renvoie le nombre de fichiers supprimés.
+    pub fn nettoyer(&self) -> usize {
+        use std::io::BufRead;
+        let limite_parties = Duration::from_secs(GARDER_PARTIES_JOURS * 24 * 3600);
+        let mut supprimes = 0;
+        for entree in std::fs::read_dir(&self.dossier).into_iter().flatten().flatten() {
+            let chemin = entree.path();
+            let a_supprimer = if chemin.extension().is_some_and(|e| e == "tmp") {
+                true
+            } else {
+                let mut premiere = String::new();
+                let lu = std::fs::File::open(&chemin)
+                    .map(|f| std::io::BufReader::new(f).read_line(&mut premiere))
+                    .is_ok();
+                match premiere.trim().parse::<u64>() {
+                    Ok(0) => entree
+                        .metadata()
+                        .and_then(|m| m.accessed().or_else(|_| m.modified()))
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > limite_parties),
+                    Ok(expire) => expire <= maintenant(),
+                    Err(_) => lu, // fichier illisible ou abîmé
+                }
+            };
+            if a_supprimer && std::fs::remove_file(&chemin).is_ok() {
+                supprimes += 1;
+            }
+        }
+        supprimes
     }
 }
 
@@ -64,10 +117,14 @@ mod tests {
         let dossier = std::env::temp_dir().join(format!("stat-traque-test-{}", std::process::id()));
         let c = Cache::nouveau(dossier.clone());
         c.ecrire("/match/1", "{\"a\":1}", Duree::Toujours);
-        c.ecrire("/rang/1", "[]", Duree::Pendant(Duration::ZERO));
+        c.ecrire("/statut", "{}", Duree::Pendant(Duration::ZERO));
         assert_eq!(c.lire("/match/1").as_deref(), Some("{\"a\":1}"));
-        assert_eq!(c.lire("/rang/1"), None); // déjà expiré
+        assert_eq!(c.lire("/statut"), None); // durée nulle : jamais écrit
         assert_eq!(c.lire("/inconnu"), None);
+        // Une réponse expirée est supprimée par le ménage, la partie reste.
+        std::fs::write(c.chemin("/rang/1"), "1\n[]").unwrap();
+        assert_eq!(c.nettoyer(), 1);
+        assert!(c.lire("/match/1").is_some());
         let _ = std::fs::remove_dir_all(dossier);
     }
 }

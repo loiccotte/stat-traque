@@ -45,37 +45,71 @@ impl Lcu {
     }
 }
 
-/// Dossiers où chercher le lockfile, du plus probable au moins probable.
-/// `dossier_connu` = dossier mémorisé dans les réglages lors d'une détection précédente.
+/// Où chercher le lockfile. Si le dossier du jeu est connu (mémorisé), on ne
+/// regarde QUE là : une seule lecture de fichier, coût ~0.
+/// Sinon : l'emplacement par défaut puis le processus lancé (voir plus bas).
+/// On ne sonde pas D:, E:... : un lecteur réseau ou optique peut bloquer plusieurs secondes.
 fn dossiers_candidats(dossier_connu: Option<&str>) -> Vec<PathBuf> {
     let mut d: Vec<PathBuf> = Vec::new();
-    // Pour tester sans LoL (ou sous Linux) : STAT_TRAQUE_LOCKFILE=chemin/du/dossier
+    // Pour tester sans LoL : STAT_TRAQUE_LOCKFILE=chemin\du\dossier
     if let Some(test) = std::env::var_os("STAT_TRAQUE_LOCKFILE") {
         d.push(PathBuf::from(test));
     }
-    if let Some(c) = dossier_connu {
-        d.push(PathBuf::from(c));
-    }
-    for lettre in ["C", "D", "E", "F"] {
-        d.push(PathBuf::from(format!("{lettre}:\\Riot Games\\League of Legends")));
+    match dossier_connu {
+        Some(c) => d.push(PathBuf::from(c)),
+        None => d.push(PathBuf::from("C:\\Riot Games\\League of Legends")),
     }
     d
 }
 
-/// Demande à Windows où tourne `LeagueClientUx.exe`.
-/// COÛTEUX (lance PowerShell, ~200 ms et ~40 Mo le temps de l'appel) :
-/// on ne l'appelle qu'en dernier recours, puis on mémorise le dossier trouvé.
+/// Demande à Windows où tourne `LeagueClientUx.exe`, via la liste des processus
+/// (CreateToolhelp32Snapshot) : environ 1 ms, aucun programme externe lancé.
 #[cfg(windows)]
 fn dossier_du_processus() -> Option<PathBuf> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000; // pas de fenêtre noire qui clignote
-    let sortie = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", "(Get-Process LeagueClientUx -ErrorAction SilentlyContinue).Path"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    let chemin = String::from_utf8_lossy(&sortie.stdout).trim().to_string();
-    Path::new(&chemin).parent().map(Path::to_path_buf).filter(|p| !p.as_os_str().is_empty())
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY : appels Windows documentés ; chaque poignée ouverte est refermée.
+    unsafe {
+        let liste = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if liste == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut entree: PROCESSENTRY32W = std::mem::zeroed();
+        entree.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut pid = None;
+        let mut ok = Process32FirstW(liste, &mut entree) != 0;
+        while ok {
+            let fin = entree.szExeFile.iter().position(|&c| c == 0).unwrap_or(entree.szExeFile.len());
+            let nom = String::from_utf16_lossy(&entree.szExeFile[..fin]);
+            if nom.eq_ignore_ascii_case("LeagueClientUx.exe") {
+                pid = Some(entree.th32ProcessID);
+                break;
+            }
+            ok = Process32NextW(liste, &mut entree) != 0;
+        }
+        CloseHandle(liste);
+
+        let processus = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid?);
+        if processus.is_null() {
+            return None;
+        }
+        let mut tampon = [0u16; 1024];
+        let mut taille = tampon.len() as u32;
+        let reussi = QueryFullProcessImageNameW(processus, 0, tampon.as_mut_ptr(), &mut taille) != 0;
+        CloseHandle(processus);
+        if !reussi {
+            return None;
+        }
+        let chemin = PathBuf::from(std::ffi::OsString::from_wide(&tampon[..taille as usize]));
+        chemin.parent().map(Path::to_path_buf)
+    }
 }
 
 #[cfg(not(windows))]
@@ -89,14 +123,15 @@ fn lire_lockfile(dossier: &Path) -> Option<Lcu> {
 }
 
 /// Cherche le client. Renvoie la connexion et le dossier où il a été trouvé.
-/// `avec_processus` autorise l'appel PowerShell (à faire rarement).
-pub fn trouver_client(dossier_connu: Option<&str>, avec_processus: bool) -> Option<(Lcu, PathBuf)> {
+/// `scanner` : consulter aussi la liste des processus (utile si le dossier est
+/// inconnu, ou si le jeu a été déplacé).
+pub fn trouver_client(dossier_connu: Option<&str>, scanner: bool) -> Option<(Lcu, PathBuf)> {
     for dossier in dossiers_candidats(dossier_connu) {
         if let Some(lcu) = lire_lockfile(&dossier) {
             return Some((lcu, dossier));
         }
     }
-    if avec_processus {
+    if scanner {
         let dossier = dossier_du_processus()?;
         return lire_lockfile(&dossier).map(|l| (l, dossier));
     }

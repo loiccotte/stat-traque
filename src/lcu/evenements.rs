@@ -29,9 +29,12 @@ const ABONNEMENTS: [&str; 2] = [
     "OnJsonApiEvent_lol-champ-select_v1_session",
 ];
 
-/// Toutes les combien de tentatives on se permet l'appel PowerShell (coûteux).
-/// Tentative toutes les 3 s -> PowerShell au plus toutes les 30 s.
-const TENTATIVES_AVANT_POWERSHELL: u32 = 10;
+/// Client fermé : on regarde si le lockfile est apparu toutes les 3 s.
+/// C'est UNE lecture de fichier (quelques microsecondes) : CPU ~0 %.
+const ATTENTE_CLIENT: Duration = Duration::from_secs(3);
+/// Si le dossier du jeu est connu, on ne parcourt la liste des processus
+/// (au cas où le jeu aurait été déplacé) qu'une fois sur 20 (~1 min).
+const TENTATIVES_PAR_SCAN: u32 = 20;
 
 /// Lance le thread. Il tourne jusqu'à la fin du programme.
 pub fn lancer(tx: Sender<Evenement>) {
@@ -43,39 +46,54 @@ pub fn lancer(tx: Sender<Evenement>) {
 }
 
 fn boucle(tx: Sender<Evenement>) {
+    // Les réglages sont lus UNE fois (pas à chaque tentative).
+    let mut reglages = crate::stockage::Reglages::charger();
     let mut tentative: u32 = 0;
+    // Dernière erreur journalisée : on n'écrit que les CHANGEMENTS (journal borné).
+    let mut derniere_erreur = String::new();
+    // Attente entre deux échecs de connexion (lockfile périmé après un crash...) : 3 s -> 30 s.
+    let mut attente_echec = ATTENTE_CLIENT;
     loop {
-        let reglages = crate::stockage::Reglages::charger();
-        let avec_powershell = tentative.is_multiple_of(TENTATIVES_AVANT_POWERSHELL);
-        tentative += 1;
+        let scanner = reglages.get("dossier_lol").is_none() || tentative.is_multiple_of(TENTATIVES_PAR_SCAN);
+        tentative = tentative.wrapping_add(1);
 
-        let Some((lcu, dossier)) = trouver_client(reglages.get("dossier_lol"), avec_powershell) else {
-            thread::sleep(Duration::from_secs(3));
+        let Some((lcu, dossier)) = trouver_client(reglages.get("dossier_lol"), scanner) else {
+            thread::sleep(ATTENTE_CLIENT);
             continue;
         };
-        memoriser_dossier(reglages, &dossier);
+        memoriser_dossier(&mut reglages, &dossier);
 
         match ouvrir_websocket(&lcu) {
             Ok(socket) => {
-                tentative = 0;
+                tentative = 1;
+                derniere_erreur.clear();
+                attente_echec = ATTENTE_CLIENT;
                 if tx.send(Evenement::ClientConnecte).is_err() {
                     return; // le cerveau est arrêté : on s'arrête aussi
                 }
-                etat_initial(&lcu, &tx);
-                ecouter(socket, &tx);
+                let deja_envoye = etat_initial(&lcu, &tx);
+                ecouter(socket, &tx, deja_envoye);
                 if tx.send(Evenement::ClientPerdu).is_err() {
                     return;
                 }
+                thread::sleep(ATTENTE_CLIENT);
             }
-            // Le lockfile existe mais le client démarre encore : on réessaie bientôt.
-            Err(e) => log!("Client LoL pas encore prêt ({e})"),
+            // Le lockfile existe mais le client démarre encore (ou il est périmé).
+            Err(e) => {
+                let texte = e.to_string();
+                if texte != derniere_erreur {
+                    log!("Client LoL pas encore prêt ({texte})");
+                    derniere_erreur = texte;
+                }
+                thread::sleep(attente_echec);
+                attente_echec = (attente_echec * 2).min(Duration::from_secs(30));
+            }
         }
-        thread::sleep(Duration::from_secs(3));
     }
 }
 
-/// On mémorise le dossier du jeu : la prochaine fois, plus besoin de PowerShell.
-fn memoriser_dossier(mut reglages: crate::stockage::Reglages, dossier: &std::path::Path) {
+/// On mémorise le dossier du jeu : la prochaine fois, une seule lecture de fichier suffit.
+fn memoriser_dossier(reglages: &mut crate::stockage::Reglages, dossier: &std::path::Path) {
     let texte = dossier.to_string_lossy();
     if reglages.get("dossier_lol") != Some(&texte) {
         reglages.set("dossier_lol", &texte);
@@ -88,34 +106,48 @@ type Socket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStre
 fn ouvrir_websocket(lcu: &Lcu) -> Result<Socket, Box<dyn std::error::Error>> {
     let mut requete = format!("wss://127.0.0.1:{}", lcu.port).into_client_request()?;
     requete.headers_mut().insert("Authorization", lcu.auth.parse()?);
-    let tcp = TcpStream::connect(("127.0.0.1", lcu.port))?;
+    let adresse = std::net::SocketAddr::from(([127, 0, 0, 1], lcu.port));
+    let tcp = TcpStream::connect_timeout(&adresse, Duration::from_secs(2))?;
+    // Délai max pendant la poignée de main : un client qui démarre peut accepter
+    // la connexion sans jamais répondre. Ensuite : lecture bloquante sans délai.
+    tcp.set_read_timeout(Some(Duration::from_secs(3)))?;
     let connecteur = Connector::NativeTls(crate::http::tls_local());
-    let (mut socket, _) = tungstenite::client_tls_with_config(requete, tcp, None, Some(connecteur))?;
+    let (mut socket, _) = tungstenite::client_tls_with_config(requete, tcp.try_clone()?, None, Some(connecteur))?;
     for sujet in ABONNEMENTS {
         socket.send(Message::text(format!("[5, \"{sujet}\"]")))?;
     }
+    tcp.set_read_timeout(None)?;
     Ok(socket)
 }
 
+/// Clé de déduplication du champ select : (champion, rôle).
+type CleChampSelect = (u16, Option<Box<str>>);
+
 /// Le WebSocket ne prévient que des CHANGEMENTS : on lit donc l'état actuel une fois.
-fn etat_initial(lcu: &Lcu, tx: &Sender<Evenement>) {
+/// Renvoie le champ select déjà envoyé (pour ne pas l'annoncer deux fois).
+fn etat_initial(lcu: &Lcu, tx: &Sender<Evenement>) -> Option<CleChampSelect> {
     let phase = lcu
         .get("/lol-gameflow/v1/gameflow-phase")
         .and_then(|v| v.as_str().map(Phase::depuis_texte))
         .unwrap_or(Phase::Aucune);
     let _ = tx.send(Evenement::Phase(phase));
-    if phase == Phase::ChampSelect {
-        if let Some(ev) = lcu.get("/lol-champ-select/v1/session").as_ref().and_then(lire_champ_select) {
-            let _ = tx.send(ev);
-        }
+    if phase != Phase::ChampSelect {
+        return None;
     }
+    let ev = lcu.get("/lol-champ-select/v1/session").as_ref().and_then(lire_champ_select)?;
+    let cle = match &ev {
+        Evenement::ChampSelect { champion, role } => (*champion, role.clone()),
+        _ => return None,
+    };
+    let _ = tx.send(ev);
+    Some(cle)
 }
 
 /// Lit les messages jusqu'à la fermeture du client. Bloquant : dort entre deux messages.
-fn ecouter(mut socket: Socket, tx: &Sender<Evenement>) {
+fn ecouter(mut socket: Socket, tx: &Sender<Evenement>, deja_envoye: Option<CleChampSelect>) {
     // Le client renvoie la session de champ select à CHAQUE petit changement
     // (timer, survol d'un allié...) : on ne transmet que si MON choix change.
-    let mut dernier_champ_select: Option<(u16, Option<Box<str>>)> = None;
+    let mut dernier_champ_select = deja_envoye;
     while let Ok(message) = socket.read() {
         let Message::Text(texte) = message else { continue };
         if let Some(ev) = traduire(&texte) {

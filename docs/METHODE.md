@@ -57,14 +57,30 @@ Parallélisable dès le départ après T01 : **T02, T03, T07, T08**.
 ## Mesures (squelette v0.2, T01–T09)
 | Mesure | Avant (v0.1, reqwest) | Après (v0.2) | Budget |
 |---|---|---|---|
-| Taille .exe Windows | 1,30 Mo | 0,95 Mo | < 8 Mo |
+| Taille .exe Windows | 1,30 Mo | 0,89 Mo | < 8 Mo |
 | RAM au repos (mesurée sous Linux) | — | 9 Mo | < 15 Mo |
 | RAM pic (champ select + partie simulés) | — | 12 Mo | < 40 Mo |
 | Threads au repos | 1 + runtime tokio | 2 (cerveau + client LoL endormis) | — |
 | Requêtes au client LoL au repos | 1 / seconde | 0 (WebSocket) | 0 |
 | Démarrage jusqu'à prêt | — | < 1 ms (Data Dragon en fond) | < 300 ms |
 
+| Recherche du client LoL fermé | PowerShell à chaque seconde | 1 lecture de fichier / 3 s, liste des processus native | ~0 % CPU |
+
 La CI Windows (`.github/workflows/ci.yml`) relance `scripts/mesure.ps1` à chaque push.
+
+### Revue `perf` + `qualite` (v0.2) : 15 points relevés, corrigés
+- **Bloquant** : PowerShell lancé toutes les 30 s client fermé -> remplacé par la liste des processus Windows
+  (~1 ms), et seulement si le dossier du jeu est inconnu ; plus de sondage de D:/E:/F:.
+- Le suivi de partie survit à la fermeture du client LoL et s'arrête seul après la partie.
+- Port 2999 : `playerlist` + `gamestats` au lieu de `allgamedata` ; seulement s'il y a un affichage.
+- Identifiants d'objets en u32 (objets à 6 chiffres).
+- Cache Riot : ménage au démarrage, écriture atomique, fichier abîmé redemandé, pas d'écriture inutile.
+- Limiteur Riot unique pour toute l'app ; Data Dragon : un fichier en RAM à la fois, repli sur l'ancien patch.
+- Icône remise si l'Explorateur redémarre ; une seule instance ; pas de boîte « aucun disque ».
+- Journal : erreurs répétées écrites une seule fois, attente progressive 3 s -> 30 s.
+
+Pistes plus tard : attendre le lockfile avec `FindFirstChangeNotificationW` (0 réveil),
+résumé compact des parties au lieu du JSON match-v5 brut (T19).
 
 ## Décisions ouvertes
 - **T10 – source des builds** : les fiches OTP (T26) couvrent les builds par matchup pour les champions qui en ont.

@@ -9,7 +9,7 @@
 #[cfg(windows)]
 mod windows_impl {
     use std::ptr::null_mut;
-    use std::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
     use std::sync::mpsc::Sender;
     use std::sync::{Mutex, OnceLock};
 
@@ -29,6 +29,9 @@ mod windows_impl {
     static FENETRE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
     static ETAT: Mutex<String> = Mutex::new(String::new());
     static TX: OnceLock<Sender<Evenement>> = OnceLock::new();
+    /// Message envoyé par Windows quand la barre des tâches est recréée
+    /// (redémarrage de l'Explorateur) : il faut alors remettre l'icône.
+    static MSG_BARRE_RECREEE: AtomicU32 = AtomicU32::new(0);
 
     /// Texte Rust -> texte Windows (UTF-16 terminé par un zéro).
     fn utf16(s: &str) -> Vec<u16> {
@@ -46,13 +49,37 @@ mod windows_impl {
 
     fn mettre_infobulle(nid: &mut NOTIFYICONDATAW) {
         let texte = format!("stat-traque — {}", ETAT.lock().unwrap());
-        for (dst, src) in nid.szTip.iter_mut().zip(utf16(&texte).iter().take(127)) {
-            *dst = *src;
+        // 127 unités UTF-16 max (+ le zéro final) ; on coupe entre deux caractères,
+        // jamais au milieu d'un caractère codé sur 2 unités.
+        let mut i = 0;
+        for c in texte.chars() {
+            let mut tampon = [0u16; 2];
+            let unites = c.encode_utf16(&mut tampon);
+            if i + unites.len() > 127 {
+                break;
+            }
+            nid.szTip[i..i + unites.len()].copy_from_slice(unites);
+            i += unites.len();
         }
+        nid.szTip[i] = 0;
         nid.uFlags |= NIF_TIP;
     }
 
+    unsafe fn ajouter_icone(fenetre: HWND) {
+        let mut nid = donnees_icone(fenetre);
+        nid.uFlags = NIF_ICON | NIF_MESSAGE;
+        nid.uCallbackMessage = MSG_ICONE;
+        nid.hIcon = LoadIconW(null_mut(), IDI_APPLICATION); // icône provisoire
+        mettre_infobulle(&mut nid);
+        Shell_NotifyIconW(NIM_ADD, &nid);
+    }
+
     unsafe extern "system" fn procedure(fenetre: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        let barre_recreee = MSG_BARRE_RECREEE.load(Ordering::Relaxed);
+        if barre_recreee != 0 && msg == barre_recreee {
+            ajouter_icone(fenetre);
+            return 0;
+        }
         match msg {
             MSG_ICONE if matches!(lparam as u32, WM_LBUTTONUP | WM_RBUTTONUP) => {
                 afficher_menu(fenetre);
@@ -80,6 +107,8 @@ mod windows_impl {
         SetForegroundWindow(fenetre); // sinon le menu ne se ferme pas en cliquant ailleurs
         let choix = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, p.x, p.y, 0, fenetre, null_mut());
         DestroyMenu(menu);
+        // Recommandé par Microsoft après TrackPopupMenu (sinon le 2e clic peut être ignoré).
+        PostMessageW(fenetre, WM_NULL, 0, 0);
         if choix as usize == ID_QUITTER {
             if let Some(tx) = TX.get() {
                 let _ = tx.send(Evenement::Quitter);
@@ -103,18 +132,15 @@ mod windows_impl {
                 ..std::mem::zeroed()
             };
             RegisterClassW(&wc);
+            let nom_msg = utf16("TaskbarCreated");
+            MSG_BARRE_RECREEE.store(RegisterWindowMessageW(nom_msg.as_ptr()), Ordering::Relaxed);
             let fenetre = CreateWindowExW(
                 0, classe.as_ptr(), classe.as_ptr(), 0, 0, 0, 0, 0,
                 null_mut(), null_mut(), instance, null_mut(),
             );
             FENETRE.store(fenetre, Ordering::Release);
 
-            let mut nid = donnees_icone(fenetre);
-            nid.uFlags = NIF_ICON | NIF_MESSAGE;
-            nid.uCallbackMessage = MSG_ICONE;
-            nid.hIcon = LoadIconW(null_mut(), IDI_APPLICATION); // icône provisoire
-            mettre_infobulle(&mut nid);
-            Shell_NotifyIconW(NIM_ADD, &nid);
+            ajouter_icone(fenetre);
 
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
@@ -134,6 +160,25 @@ mod windows_impl {
         }
     }
 
+    /// Une seule instance à la fois. Renvoie `false` si stat-traque tourne déjà.
+    /// (Le verrou nommé disparaît tout seul quand le processus se termine.)
+    pub fn instance_unique() -> bool {
+        use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        use windows_sys::Win32::System::Threading::CreateMutexW;
+        let nom = utf16("Local\\stat-traque-instance");
+        unsafe {
+            CreateMutexW(null_mut(), 0, nom.as_ptr());
+            GetLastError() != ERROR_ALREADY_EXISTS
+        }
+    }
+
+    /// Évite les fenêtres « Aucun disque dans le lecteur » si un chemin pointe vers
+    /// un lecteur vide ou débranché : l'erreur est simplement renvoyée au programme.
+    pub fn sans_boites_erreur_disque() {
+        use windows_sys::Win32::System::Diagnostics::Debug::{SetErrorMode, SEM_FAILCRITICALERRORS};
+        unsafe { SetErrorMode(SEM_FAILCRITICALERRORS) };
+    }
+
     /// En mode `--console` (ou commande `cle`), ouvre une console pour voir les messages.
     pub fn ouvrir_console() {
         use windows_sys::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
@@ -146,13 +191,21 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::{definir_etat, lancer, ouvrir_console};
+pub use windows_impl::{definir_etat, instance_unique, lancer, ouvrir_console, sans_boites_erreur_disque};
 
 #[cfg(not(windows))]
 pub fn definir_etat(_texte: &str) {}
 
 #[cfg(not(windows))]
 pub fn ouvrir_console() {}
+
+#[cfg(not(windows))]
+pub fn instance_unique() -> bool {
+    true
+}
+
+#[cfg(not(windows))]
+pub fn sans_boites_erreur_disque() {}
 
 #[cfg(not(windows))]
 pub fn lancer(_tx: std::sync::mpsc::Sender<crate::evenement::Evenement>) {}

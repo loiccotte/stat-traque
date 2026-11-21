@@ -35,7 +35,8 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, console: bool) {
             }
             Evenement::ClientPerdu => {
                 log!("Client LoL fermé, en attente...");
-                etat.suivi = None;
+                // On NE coupe PAS le suivi de partie : le jeu continue sans le client
+                // (beaucoup ferment le client pendant la partie). Il s'arrête seul à la fin.
                 etat.phase = Phase::Aucune;
                 crate::tray::definir_etat("En attente du client LoL");
             }
@@ -66,10 +67,13 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     }
     log!("Phase : {}", p.libelle());
     crate::tray::definir_etat(p.libelle());
-    // Le suivi de partie (port 2999) ne tourne QUE pendant la partie.
-    match (p.en_partie(), etat.suivi.is_some()) {
+    // Le suivi de partie (port 2999) ne tourne QUE pendant la partie, et seulement
+    // si quelqu'un affiche le résultat (console aujourd'hui, overlay plus tard).
+    let besoin = p.en_partie() && etat.console;
+    let vivant = etat.suivi.as_ref().is_some_and(SuiviPartie::vivant);
+    match (besoin, vivant) {
         (true, false) => etat.suivi = Some(live::suivre(tx.clone())),
-        (false, true) => etat.suivi = None,
+        (false, _) if !p.en_partie() => etat.suivi = None,
         _ => {}
     }
     etat.phase = p;

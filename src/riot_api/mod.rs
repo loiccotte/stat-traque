@@ -63,7 +63,7 @@ pub fn region_routage(plateforme: &str) -> &'static str {
 pub struct RiotApi {
     cle: Option<String>,
     plateforme: String,
-    limiteur: Limiteur,
+    limiteur: &'static Limiteur,
     cache: Cache,
 }
 
@@ -73,7 +73,7 @@ impl RiotApi {
         Self {
             cle: crate::stockage::lire_cle(),
             plateforme: reglages.region().to_string(),
-            limiteur: Limiteur::cle_dev(),
+            limiteur: Limiteur::global(),
             cache: Cache::nouveau(crate::stockage::dossier_cache("riot")),
         }
     }
@@ -82,7 +82,10 @@ impl RiotApi {
     fn requete(&self, hote: &str, chemin: &str, duree: Duree) -> Result<Value, ErreurApi> {
         let url = format!("https://{hote}.api.riotgames.com{chemin}");
         if let Some(texte) = self.cache.lire(&url) {
-            return serde_json::from_str(&texte).map_err(|_| ErreurApi::Autre(0));
+            match serde_json::from_str(&texte) {
+                Ok(v) => return Ok(v),
+                Err(_) => self.cache.oublier(&url), // fichier abîmé : on redemande à Riot
+            }
         }
         let cle = self.cle.as_deref().ok_or(ErreurApi::PasDeCle)?;
         // 2 essais maximum : le 2e seulement si Riot a répondu 429 (trop de requêtes).
@@ -106,6 +109,11 @@ impl RiotApi {
             }
         }
         Err(ErreurApi::Autre(429))
+    }
+
+    /// Ménage du cache disque (à lancer au démarrage, en arrière-plan).
+    pub fn nettoyer_cache(&self) -> usize {
+        self.cache.nettoyer()
     }
 
     /// Vérifie que la clé fonctionne (statut du serveur, jamais mis en cache).

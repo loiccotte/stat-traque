@@ -66,6 +66,12 @@ fn main() {
     if console {
         tray::ouvrir_console();
     }
+    // Deux instances = deux icônes, deux connexions, un journal écrasé : on refuse.
+    if !tray::instance_unique() {
+        println!("stat-traque est déjà lancé (icône près de l'horloge).");
+        return;
+    }
+    tray::sans_boites_erreur_disque();
     journal::initialiser();
     log!("stat-traque {} — démarrage", env!("CARGO_PKG_VERSION"));
 
@@ -111,10 +117,14 @@ fn commande_region(region: &str) {
     }
 }
 
-/// Vérifie la clé sans retarder le démarrage.
+/// Ménage du cache et vérification de la clé, sans retarder le démarrage.
 fn verifier_cle_en_fond() {
     std::thread::spawn(|| {
         let api = riot_api::RiotApi::depuis_reglages(&stockage::Reglages::charger());
+        let supprimes = api.nettoyer_cache();
+        if supprimes > 0 {
+            log!("Cache Riot : {supprimes} fichiers périmés supprimés.");
+        }
         match api.verifier_cle() {
             Ok(()) => log!("Clé API : valide."),
             Err(e) => log!("Clé API : {e}"),

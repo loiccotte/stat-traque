@@ -14,7 +14,7 @@ Priorité : P0 indispensable · P1 important · P2 bonus
 | F03 | Sorts d'invocateur auto (Flash côté D/F mémorisé) | 🔜 | P0 | respecte ta touche Flash habituelle | T12 |
 | F04 | Item sets : core, bottes, situationnels (objets de fin de partie match-v5) | ✅ | P1 | un seul set « stat-traque <champion> » dans le client, remplacé (jamais de doublon), `objets=non` pour désactiver | T13 |
 | F05 | Détection du rôle assigné | ✅ | P0 | — | T09 |
-| F06 | Ordre de compétences (piste : timeline-v5 à la collecte, +1 requête par partie ; donnerait aussi l'objet de départ) | 🔜 | P1 | — | T14 |
+| F06 | ~~Ordre de compétences et objet de départ~~ | ❌ abandonné | — | jugé inutile | — |
 | F07 | Builds perso sauvegardés, prioritaires sur l'auto | 🔜 | P1 | Blitz écrase tes pages | T10 |
 | F08 | Mode « proposer » : rien n'est appliqué sans 1 clic | 🔜 | P1 | contrôle total | T14 |
 | F09 | Contre-picks / matchup de lane (adversaire probable d'après les rôles habituels des ennemis visibles) | ✅ | P2 | lecture filtrée : seules les lignes des champions visibles sont lues (quelques dizaines de Ko) | T10 |
@@ -40,7 +40,15 @@ Priorité : P0 indispensable · P1 important · P2 bonus
 | F21 | Historique des parties avec filtres | ✅ | P0 | base locale TSV (~100 octets / partie), hors ligne ; 100 dernières parties au 1er lancement (pas de pagination) ; filtres = interface | T22 |
 | F22 | Stats perso par champion / rôle / patch | ✅ | P1 | — | T21 |
 | F23 | Suivi des LP et de la progression | ✅ | P1 | LP par partie, changements de division gérés | T21 |
-| F24 | Récap partageable (texte / image) pour les amis | 💡 | P2 | — | T22 |
+| F24 | Récap partageable (texte prêt à coller sur Discord) pour les amis | 🔜 | P1 | — | T30 |
+
+## 3 bis. Fiche joueur
+| ID | Feature | Statut | Prio | Mieux que Blitz | Tâche |
+|---|---|---|---|---|---|
+| F41 | Radar de jeu : combat, farm, vision, objectifs, lane, survie, agressivité, noté par rapport aux joueurs du même rang et du même rôle | 🔜 | P1 | comparé à TON niveau, pas aux pros | T29 |
+| F42 | MMR estimé (gains/pertes de LP, winrate, parties) — affiché comme une estimation | 🔜 | P1 | — | T29 |
+| F43 | Spécificités : champion pool, rôles, style (farmer, roamer, teamfighter, early...), forme récente | 🔜 | P1 | — | T29 |
+| F44 | Fiche des autres joueurs de la partie, à la demande (coût en requêtes borné, cache) | 🔜 | P1 | — | T29 |
 
 ## 4. Savoir des OTP (fiches matchup)
 L'idée : les one-tricks (OTP) tiennent des spreadsheets ou des sites (ex : fiches Zed de
@@ -71,7 +79,7 @@ et on demande l'accord de l'auteur avant de distribuer une fiche avec l'app.
 | F30 | Lancement avec Windows (`stat-traque demarrage oui`) | ✅ | P1 | clé Run de l'utilisateur, aucun service | T25 |
 | F31 | Mise à jour automatique légère (GitHub Releases) | ✅ | P1 | 1 vérification / jour, `maj=non` pour couper | T25 |
 | F32 | Mode console ultra léger conservé (`--console`) | ✅ | P2 | — | T07 |
-| F33 | FR / EN, thème clair / sombre | 💡 | P2 | — | T07 |
+| F33 | ~~Version anglaise~~ (app locale, en français) ; thème sombre | ❌ abandonné | — | — | — |
 | F34 | Zéro pub, zéro télémétrie, zéro compte | ✅ | P0 | c'est la différence principale | — |
 
 ## Exclu volontairement (politique Riot)

@@ -59,6 +59,8 @@ Les agents sont définis dans `.claude/agents/` ; les règles communes dans `CLA
 | T26 | Fiches matchup OTP : format + import CSV / Google Sheet | dev-donnees | T04 | une fiche Zed importée |  |
 | T27 | Détection de l'adversaire de lane en champ select | dev-lcu | T09 | bon adversaire en draft |  |
 | T28 | Affichage de la fiche en champ select et overlay | dev-ui | T14, T26, T27 | affichée en < 100 ms |  |
+| T29 | Fiche joueur : radar, MMR estimé, spécificités (feature/fiche-joueur) | dev-riot-api | T19, T10 | moi : 0 requête ; autre joueur : ≤ 11 requêtes |  |
+| T30 | Récap partageable (texte Discord) | dev-riot-api | T20 | 1 clic pour copier |  |
 
 Parallélisable dès le départ après T01 : **T02, T03, T07, T08**.
 

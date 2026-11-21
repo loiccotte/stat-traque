@@ -5,17 +5,18 @@
 //! Il ne parle ni au client LoL ni à l'API Riot : il lit l'état d'affichage, une
 //! ligne JSON par changement, sur son entrée standard (voir protocole.rs).
 //! Entrée standard fermée = le processus principal demande la fermeture.
+//! Ses DEMANDES (fiche d'un joueur...) partent sur sa sortie standard (`demander`).
 //!
 //! Rendu seulement quand il le faut : à chaque message reçu (`request_repaint`)
 //! ou action de la souris / du clavier. Jamais de boucle à 60 images/s.
 
-use std::io::BufRead;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::io::{BufRead, Write};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
 use eframe::egui;
 
 use super::ecrans::{self, Ecran};
-use super::protocole::{appliquer_message, lire_message, meme_version, Message};
+use super::protocole::{appliquer_message, ligne_demande, lire_message, meme_version, Demande, Message};
 use super::{demo, format, overlay, theme};
 use crate::affichage::EtatAffichage;
 
@@ -44,6 +45,93 @@ fn partage<R>(f: impl FnOnce(&mut Partage) -> R) -> R {
 fn redessiner() {
     if let Some(ctx) = CONTEXTE.get() {
         ctx.request_repaint();
+    }
+}
+
+/// Canal vers le thread « demandes » de CE processus (créé au 1er envoi).
+static DEMANDES: OnceLock<Mutex<mpsc::Sender<String>>> = OnceLock::new();
+
+/// Envoie une demande au processus principal (canal retour : une ligne JSON sur
+/// notre sortie standard, lue par parent.rs). Ne bloque jamais la fenêtre :
+/// l'écriture se fait dans un petit thread à part.
+pub fn demander(d: &Demande) {
+    let tx = DEMANDES.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<String>();
+        let _ = std::thread::Builder::new().name("demandes".into()).spawn(move || {
+            for l in rx {
+                let mut sortie = std::io::stdout().lock();
+                // Erreur = le processus principal ne lit plus : rien à faire.
+                if writeln!(sortie, "{l}").and_then(|_| sortie.flush()).is_err() {
+                    break;
+                }
+            }
+        });
+        Mutex::new(tx)
+    });
+    let _ = tx.lock().unwrap().send(ligne_demande(d));
+}
+
+/// Copie un texte dans le presse-papiers. Renvoie false si ça a échoué.
+///
+/// eframe est compilé SANS presse-papiers (dépendance `arboard` évitée) : sous
+/// Windows on appelle directement l'API du système (quelques fonctions, coût ~0).
+/// `ctx.copy_text` garde aussi le texte pour egui (Ctrl+V dans un champ de l'app ;
+/// sous Linux, c'est la seule copie : suffisant pour le développement).
+pub fn copier(ctx: &egui::Context, texte: &str) -> bool {
+    ctx.copy_text(texte.to_string());
+    #[cfg(windows)]
+    {
+        presse_papiers_windows(texte)
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+#[cfg(windows)]
+fn presse_papiers_windows(texte: &str) -> bool {
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    /// Format « texte Unicode » (UTF-16) du presse-papiers.
+    const CF_UNICODETEXT: u32 = 13;
+    // Windows veut de l'UTF-16 terminé par un zéro, avec des fins de ligne \r\n.
+    let utf16: Vec<u16> = texte.replace("\r\n", "\n").replace('\n', "\r\n").encode_utf16().chain([0]).collect();
+    // SAFETY : suite d'appels documentée (OpenClipboard -> EmptyClipboard ->
+    // SetClipboardData -> CloseClipboard). Après un SetClipboardData réussi, la
+    // mémoire appartient à Windows : on ne la libère que si ça a échoué.
+    unsafe {
+        // Un autre programme peut tenir le presse-papiers un court instant : 5 essais.
+        // Propriétaire : notre fenêtre (au premier plan, on vient de cliquer dessus).
+        let fenetre = GetForegroundWindow();
+        let mut ouvert = false;
+        for _ in 0..5 {
+            if OpenClipboard(fenetre) != 0 {
+                ouvert = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if !ouvert {
+            return false;
+        }
+        let mut ok = false;
+        let memoire = GlobalAlloc(GMEM_MOVEABLE, utf16.len() * 2);
+        if !memoire.is_null() {
+            let p = GlobalLock(memoire) as *mut u16;
+            if !p.is_null() {
+                std::ptr::copy_nonoverlapping(utf16.as_ptr(), p, utf16.len());
+                GlobalUnlock(memoire);
+                ok = EmptyClipboard() != 0 && !SetClipboardData(CF_UNICODETEXT, memoire).is_null();
+            }
+            if !ok {
+                GlobalFree(memoire);
+            }
+        }
+        CloseClipboard();
+        ok
     }
 }
 

@@ -290,8 +290,40 @@ pub fn ecart(ecart_pct: Option<f32>) -> String {
     ecart_pct.map_or_else(String::new, |e| format!("{e:+.0}\u{a0}%"))
 }
 
+/// Onglet Partie : le joueur « scouté » (rangs) correspond-il à un joueur dont on
+/// peut demander la fiche (`cibles_fiche`, venu de spectator) ? On cherche d'abord
+/// le même Riot ID ET le même champion ; sinon le seul joueur sur ce champion.
+pub fn cible_du_joueur<'a>(
+    cibles: &'a [crate::affichage::VueCibleFiche],
+    nom: &str,
+    champion: u16,
+) -> Option<&'a crate::affichage::VueCibleFiche> {
+    if let Some(c) = cibles.iter().find(|c| c.champion == champion && c.nom == nom) {
+        return Some(c);
+    }
+    let mut meme_champion = cibles.iter().filter(|c| c.champion == champion);
+    match (meme_champion.next(), meme_champion.next()) {
+        (Some(c), None) => Some(c),
+        _ => None, // aucun, ou plusieurs (mode à champions en double) : pas de bouton
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cible_par_nom_puis_champion() {
+        use super::cible_du_joueur;
+        use crate::affichage::VueCibleFiche;
+        let c = |p: &str, n: &str, ch| VueCibleFiche { puuid: p.into(), nom: n.into(), champion: ch };
+        let cibles = vec![c("a", "Ami#EUW", 103), c("b", "Autre#EUW", 238), c("c", "Double1#EUW", 64), c("d", "Double2#EUW", 64)];
+        assert_eq!(cible_du_joueur(&cibles, "Ami#EUW", 103).unwrap().puuid, "a");
+        assert_eq!(cible_du_joueur(&cibles, "Renommé#EUW", 238).unwrap().puuid, "b", "seul sur ce champion");
+        assert_eq!(cible_du_joueur(&cibles, "Double2#EUW", 64).unwrap().puuid, "d");
+        assert!(cible_du_joueur(&cibles, "Inconnu#EUW", 64).is_none(), "ambigu");
+        assert!(cible_du_joueur(&cibles, "Ami#EUW", 1).is_none());
+        assert!(cible_du_joueur(&[], "Ami#EUW", 103).is_none());
+    }
+
     #[test]
     fn position_bornee_a_l_ecran() {
         let ecran = (0, 0, 1920, 1080);

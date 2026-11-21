@@ -6,12 +6,13 @@ use std::sync::Arc;
 use eframe::egui::{self, RichText, Stroke, Ui};
 
 use super::ecrans::couleur_winrate;
+use super::fiche::RetourCopie;
 use super::{format, theme};
 use crate::affichage::{EtatAffichage, VueTierList};
 use crate::ddragon::DonneesJeu;
 use crate::historique::{lp_absolus, nom_file, FileClassee, ProgressionLp, Recap, StatsGroupe, StatsPerso};
 
-pub fn dessiner(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>) {
+pub fn dessiner(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>, copie: &mut RetourCopie) {
     let rien = etat.historique.is_empty() && etat.progression_lp.is_none() && etat.recap.is_none();
     if rien {
         ui.add_space(40.0);
@@ -28,7 +29,7 @@ pub fn dessiner(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>)
         return;
     }
     if let Some(r) = &etat.recap {
-        dessiner_recap(ui, r, donnees);
+        dessiner_recap(ui, r, etat.recap_partage.as_deref(), donnees, copie);
         ui.add_space(8.0);
     }
     if let Some(p) = &etat.progression_lp {
@@ -44,7 +45,8 @@ pub fn dessiner(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>)
     }
 }
 
-fn dessiner_recap(ui: &mut Ui, r: &Recap, donnees: Option<&DonneesJeu>) {
+/// `partage` : le même récap en texte Discord (bouton « Copier »), s'il existe.
+fn dessiner_recap(ui: &mut Ui, r: &Recap, partage: Option<&str>, donnees: Option<&DonneesJeu>, copie: &mut RetourCopie) {
     let p = &r.partie;
     theme::carte().show(ui, |ui| {
         ui.set_min_width(ui.available_width());
@@ -63,6 +65,10 @@ fn dessiner_recap(ui: &mut Ui, r: &Recap, donnees: Option<&DonneesJeu>) {
             ui.label(format!("{} en {} min", format::kda(p.kills, p.morts, p.assists), p.duree / 60));
             if let Some(lp) = p.lp {
                 ui.label(RichText::new(format::variation_lp(lp)).color(if lp >= 0 { theme::VERT } else { theme::EQUIPE_ROUGE }));
+            }
+            if let Some(texte) = partage {
+                ui.add_space(12.0);
+                copie.bouton(ui, "recap", texte);
             }
         });
         egui::Grid::new("recap").num_columns(4).spacing([16.0, 3.0]).show(ui, |ui| {

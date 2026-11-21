@@ -150,10 +150,22 @@ fn choisir_version(racine: &Path) -> Option<String> {
 pub fn charger() -> Option<DonneesJeu> {
     let racine = crate::stockage::dossier_cache("ddragon");
     let version = choisir_version(&racine)?;
+    Some(lire_patch(&racine, version))
+}
+
+/// Le patch déjà en cache, SANS rien demander à internet (processus de la fenêtre :
+/// le processus principal s'est déjà occupé des téléchargements).
+pub fn charger_cache() -> Option<DonneesJeu> {
+    let racine = crate::stockage::dossier_cache("ddragon");
+    let v = std::fs::read_to_string(racine.join("version.txt")).ok()?.trim().to_string();
+    complet(&racine, &v).then(|| lire_patch(&racine, v))
+}
+
+fn lire_patch(racine: &Path, version: String) -> DonneesJeu {
     let dossier = racine.join(&version);
     let lire = |nom: &str| std::fs::read_to_string(dossier.join(nom)).unwrap_or_default();
     let (objets, genres_objets) = lire_objets(&lire("objets.tsv"));
-    Some(DonneesJeu {
+    DonneesJeu {
         champions: lire_tsv(&lire("champions.tsv"))
             .map(|(cle, reste)| {
                 let (id, nom) = reste.split_once('\t').unwrap_or((reste, reste));
@@ -165,7 +177,7 @@ pub fn charger() -> Option<DonneesJeu> {
         objets,
         genres_objets,
         version,
-    })
+    }
 }
 
 /// Lit objets.tsv UNE fois et en tire les deux tables (noms, genres).

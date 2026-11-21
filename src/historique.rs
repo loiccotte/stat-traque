@@ -40,6 +40,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::serde_statique::Texte;
 use crate::evenement::Evenement;
 use crate::metriques::Metriques;
 use crate::rangs::Rang;
@@ -86,7 +87,7 @@ pub fn nom_file(file: u16) -> &'static str {
 }
 
 /// Famille de jeu : on ne compare que des parties de la même famille.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Famille {
     /// Faille de l'invocateur : normales, classées, partie rapide, Clash.
     Faille,
@@ -123,7 +124,7 @@ pub fn famille(file: u16) -> Famille {
 // =====================================================================
 
 /// Ce qu'on garde d'une partie : quelques nombres, pas les 60 Ko de JSON.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResumePartie {
     /// Identifiant match-v5 (ex : "EUW1_7234567890").
     pub id: Box<str>,
@@ -133,7 +134,8 @@ pub struct ResumePartie {
     pub file: u16,
     pub champion: u16,
     /// "top", "jungle", "middle", "bottom", "utility" ; None en ARAM / Arena.
-    pub role: Option<&'static str>,
+    #[serde(deserialize_with = "crate::serde_statique::option")]
+    pub role: Option<Texte>,
     pub victoire: bool,
     /// Remake : partie de moins de 5 min arrêtée par un vote (`gameEndedInEarlySurrender`).
     /// Ignorée dans les stats, les moyennes, les séries et les LP.
@@ -275,7 +277,7 @@ impl ResumePartie {
 // 2. Points de rang (suivi des LP)
 // =====================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FileClassee {
     Solo,
     Flex,
@@ -298,7 +300,7 @@ impl FileClassee {
 }
 
 /// Mon rang dans une file, à une date donnée.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PointLp {
     pub date: u64,
     pub file: FileClassee,
@@ -335,7 +337,7 @@ pub fn lp_absolus(r: &Rang) -> i32 {
 
 /// Totaux d'un groupe de parties (un champion, un rôle, un patch...).
 /// On garde des SOMMES : les moyennes se calculent à la demande, sans arrondi cumulé.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StatsGroupe {
     pub parties: u32,
     pub victoires: u32,
@@ -392,11 +394,12 @@ impl StatsGroupe {
 /// Mes stats (les plus jouées d'abord). `total`, `par_champion`, `par_role` et
 /// `par_patch` ne comptent QUE la Faille de l'invocateur ; l'ARAM, l'Arena et les
 /// autres modes ont leur ligne dans `par_famille` (et `par_file`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct StatsPerso {
     pub total: StatsGroupe,
     pub par_champion: Vec<(u16, StatsGroupe)>,
-    pub par_role: Vec<(&'static str, StatsGroupe)>,
+    #[serde(deserialize_with = "crate::serde_statique::paires")]
+    pub par_role: Vec<(Texte, StatsGroupe)>,
     pub par_patch: Vec<(Box<str>, StatsGroupe)>,
     pub par_famille: Vec<(Famille, StatsGroupe)>,
     pub par_file: Vec<(u16, StatsGroupe)>,
@@ -424,9 +427,10 @@ fn grouper<K: std::hash::Hash + Eq + Ord + Clone>(
 // =====================================================================
 
 /// Une ligne du récap : ma valeur, et ma moyenne sur ce champion.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LigneRecap {
-    pub libelle: &'static str,
+    #[serde(deserialize_with = "crate::serde_statique::texte")]
+    pub libelle: Texte,
     pub valeur: f32,
     pub moyenne: Option<f32>,
     /// Écart en % par rapport à la moyenne (+13.0 = 13 % de mieux).
@@ -456,7 +460,7 @@ impl LigneRecap {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Recap {
     pub partie: ResumePartie,
     /// Nombre de mes AUTRES parties sur ce champion, même famille (base de la moyenne).
@@ -516,7 +520,7 @@ impl Recap {
 // 5. Progression des LP
 // =====================================================================
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProgressionLp {
     pub solo: Option<Rang>,
     pub flex: Option<Rang>,
@@ -1012,13 +1016,12 @@ pub fn publier(maj: MajHistorique, donnees: Option<&crate::ddragon::DonneesJeu>)
     // Texte prêt à coller sur Discord (F24), pour le bouton « Copier » de l'interface.
     let partage = maj.recap.as_ref().map(|r| crate::fiche::recap_discord(r, &nom(r.partie.champion), None));
     affichage::modifier(move |e| {
+        e.historique = std::sync::Arc::new(maj.dernieres);
+        e.stats_perso = Some(std::sync::Arc::new(maj.stats));
+        e.progression_lp = Some(std::sync::Arc::new(maj.progression));
         if partage.is_some() {
             e.recap_partage = partage;
         }
-
-        e.historique = maj.dernieres;
-        e.stats_perso = Some(maj.stats);
-        e.progression_lp = Some(maj.progression);
         if maj.recap.is_some() {
             e.recap = maj.recap;
         }

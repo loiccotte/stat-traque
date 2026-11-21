@@ -83,9 +83,17 @@ impl Reglages {
         Self { valeurs }
     }
 
+    /// Écriture ATOMIQUE : on écrit un fichier temporaire puis on le renomme.
+    /// Une coupure (ou deux processus qui écrivent en même temps) ne laisse jamais
+    /// un fichier à moitié écrit : on a l'ancien OU le nouveau, en entier.
     pub fn sauver(&self) -> std::io::Result<()> {
         let texte: String = self.valeurs.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
-        std::fs::write(Self::chemin(), texte)
+        let chemin = Self::chemin();
+        // Nom propre à CE processus (numéro du processus) : la fenêtre et l'icône
+        // peuvent enregistrer en même temps sans se marcher dessus.
+        let temporaire = chemin.with_extension(format!("txt.{}.tmp", std::process::id()));
+        std::fs::write(&temporaire, texte)?;
+        std::fs::rename(&temporaire, &chemin)
     }
 
     pub fn get(&self, nom: &str) -> Option<&str> {

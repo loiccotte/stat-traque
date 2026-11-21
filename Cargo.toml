@@ -13,10 +13,9 @@ native-tls = "0.2"
 # au lieu de l'interroger toutes les secondes.
 tungstenite = { version = "0.24", default-features = false, features = ["handshake", "native-tls"] }
 serde_json = "1"
-# serde (déjà tiré par serde_json) + `derive` : les types d'affichage de la fiche
-# joueur seront envoyés en JSON au processus de la fenêtre. `rc` : sérialiser les `Arc`.
-# Coût : serde est déjà compilé pour serde_json ; seul le code des types dérivés
-# s'ajoute (quelques Ko d'exe, 0 octet de RAM au repos). Même ligne que feature/interface.
+# serde (déjà tiré par serde_json) + `derive` : l'état d'affichage est envoyé en JSON
+# au processus de la fenêtre (une ligne par changement). `rc` : sérialiser les `Arc`.
+# Coût mesuré : voir docs/METHODE.md (« Mesures T07 »).
 serde = { version = "1", features = ["derive", "rc"] }
 base64 = "0.22"
 
@@ -33,10 +32,25 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse", # RegisterHotKey : raccourci de l'overlay
+    "Win32_System_ProcessStatus",      # RAM du processus (commande `essai-fenetre`)
+    "Win32_UI_HiDpi",                  # netteté sur écran à 125 % / 150 % (overlay, menu)
     "Win32_System_Registry",       # lancement avec Windows (clé Run) : coût ~0
     "Win32_Security_Cryptography", # SHA-256 de la mise à jour (bcrypt.dll) : coût ~0
     "Win32_Storage_FileSystem",    # renommage durable de la mise à jour (MoveFileExW) : coût ~0
 ] }
+# Fenêtre et overlay : egui (interface "immédiate" : on redessine tout à chaque image)
+# via eframe, rendu OpenGL (`glow`). Toutes les options par défaut sont coupées :
+# pas de wgpu (lourd), pas de x11/wayland (Linux), pas de presse-papiers, de liens
+# ni de lecteur d'écran. Seulement : glow + police par défaut d'egui.
+# Coût mesuré (exe Windows release) : voir docs/METHODE.md, section « Mesures T07 ».
+# RAM : la fenêtre vit dans un processus à part (`--fenetre`), qui meurt à la fermeture.
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
+
+# Linux = développement seulement : la même fenêtre, via X11, pour compiler/tester
+# l'interface et mesurer sa RAM (Xvfb). Rien de tout ça n'entre dans l'exe Windows.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11"] }
 
 # Pour un .exe le plus petit et rapide possible quand on compile en "release".
 [profile.release]

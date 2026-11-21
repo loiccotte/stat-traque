@@ -123,8 +123,8 @@ impl Axe {
                 (Mesure::AvanceNiveau, 1.0),
                 (Mesure::Plaques, 0.5),
             ],
-            // Survie : peu de morts (compte double), beaucoup encaissé par mort.
-            Axe::Survie => &[(Mesure::Morts10, -2.0), (Mesure::EncaissesParMort, 1.0)],
+            // Survie : peu de morts (compte double), beaucoup encaissé par vie.
+            Axe::Survie => &[(Mesure::Morts10, -2.0), (Mesure::EncaissesParVie, 1.0)],
             // Agressivité : solo kills, kills par 10 min, dégâts encaissés (aller au contact).
             Axe::Agressivite => &[(Mesure::SoloKills, 1.0), (Mesure::Kills10, 1.0), (Mesure::EncaissesMin, 0.5)],
         }

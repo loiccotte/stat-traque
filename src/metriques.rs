@@ -37,7 +37,7 @@ use crate::historique::ResumePartie;
 // =====================================================================
 
 /// D'où viennent les métriques d'une partie.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Source {
     /// Partie introuvable chez Riot (rattrapage impossible) : aucune métrique.
     #[default]
@@ -49,84 +49,100 @@ pub enum Source {
 }
 
 /// Métriques brutes d'un joueur dans une partie (voir l'en-tête du fichier).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Les valeurs tirées de `challenges` sont des `Option` : un challenge ABSENT est
+/// INCONNU (None), pas 0 — sinon un champ manquant ferait croire à une mauvaise
+/// partie, chez le joueur comme dans les références. Les champs du participant,
+/// eux, sont toujours présents dans match-v5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Metriques {
     pub source: Source,
     /// killParticipation × 1000 (0,62 -> 620).
-    pub kp: u16,
+    pub kp: Option<u16>,
     /// teamDamagePercentage × 1000.
-    pub part_degats: u16,
+    pub part_degats: Option<u16>,
     /// damageTakenOnTeamPercentage × 1000.
-    pub part_encaisses: u16,
+    pub part_encaisses: Option<u16>,
     /// Sbires de lane + camps de jungle avant 10 minutes.
-    pub cs_10: u16,
+    pub cs_10: Option<u16>,
     /// maxCsAdvantageOnLaneOpponent × 10 (peut être négatif).
-    pub avance_cs: i32,
+    pub avance_cs: Option<i32>,
     /// maxLevelLeadLaneOpponent.
-    pub avance_niveau: i16,
+    pub avance_niveau: Option<i16>,
     /// earlyLaningPhaseGoldExpAdvantage : 1 = +20 % d'or et d'XP sur l'adversaire à 7 min.
-    pub avance_early: u8,
+    pub avance_early: Option<u8>,
     /// laningPhaseGoldExpAdvantage : même chose à 14 min.
-    pub avance_lane: u8,
-    pub solo_kills: u16,
+    pub avance_lane: Option<u8>,
+    pub solo_kills: Option<u16>,
     /// turretPlatesTaken.
-    pub plaques: u16,
+    pub plaques: Option<u16>,
     pub degats_objectifs: u32,
     pub degats_batiments: u32,
     /// turretTakedowns (tours détruites ou aidées).
     pub tours: u16,
     /// Dragons + barons + hérauts (takedowns).
-    pub epiques: u16,
+    pub epiques: Option<u16>,
     /// wardsPlaced.
     pub balises: u16,
     /// controlWardsPlaced (repli : detectorWardsPlaced).
-    pub pinks: u16,
+    pub pinks: Option<u16>,
     /// wardTakedowns (repli : wardsKilled).
-    pub balises_detruites: u16,
+    pub balises_detruites: Option<u16>,
     pub degats_subis: u32,
     pub degats_attenues: u32,
     /// effectiveHealAndShielding (arrondi).
-    pub soins_boucliers: u32,
+    pub soins_boucliers: Option<u32>,
     /// enemyChampionImmobilizations.
-    pub immobilisations: u16,
+    pub immobilisations: Option<u16>,
 }
 
 /// Nombre de colonnes TSV écrites par `vers_colonnes`.
 pub const NB_COLONNES: usize = 22;
 
+/// Une colonne TSV : la valeur, ou "-" si elle est inconnue.
+fn colonne<T: ToString>(v: Option<T>) -> String {
+    v.map_or("-".to_string(), |x| x.to_string())
+}
+
 impl Metriques {
     /// Lit les métriques d'un participant match-v5 (`p` = un élément de `participants`).
     pub fn depuis_participant(p: &Value) -> Self {
         let c = &p["challenges"];
-        // Petites fonctions de lecture : un champ absent ou bizarre vaut 0.
-        let f = |v: &Value, k: &str| v[k].as_f64().unwrap_or(0.0);
+        // Petites fonctions de lecture. `lu` : None si le champ est absent.
+        let lu = |v: &Value, k: &str| v[k].as_f64();
+        let f = |v: &Value, k: &str| lu(v, k).unwrap_or(0.0);
         let u16_ = |x: f64| x.round().clamp(0.0, u16::MAX as f64) as u16;
         let u32_ = |x: f64| x.round().clamp(0.0, u32::MAX as f64) as u32;
-        let mille = |k: &str| u16_(f(c, k) * 1000.0);
-        let defi_ou = |defi: &str, repli: &str| if c[defi].is_number() { f(c, defi) } else { f(p, repli) };
+        let defi = |k: &str| lu(c, k);
+        let mille = |k: &str| defi(k).map(|x| u16_(x * 1000.0));
+        // Somme de challenges : connue si AU MOINS un d'eux est présent.
+        let somme = |cles: &[&str]| {
+            let presents: Vec<f64> = cles.iter().filter_map(|k| defi(k)).collect();
+            (!presents.is_empty()).then(|| presents.iter().sum::<f64>())
+        };
+        let defi_ou = |k: &str, repli: &str| defi(k).or_else(|| lu(p, repli));
         Metriques {
             source: if c.is_object() { Source::Completes } else { Source::SansChallenges },
             kp: mille("killParticipation"),
             part_degats: mille("teamDamagePercentage"),
             part_encaisses: mille("damageTakenOnTeamPercentage"),
-            cs_10: u16_(f(c, "laneMinionsFirst10Minutes") + f(c, "jungleCsBefore10Minutes")),
-            avance_cs: (f(c, "maxCsAdvantageOnLaneOpponent") * 10.0).round() as i32,
-            avance_niveau: f(c, "maxLevelLeadLaneOpponent").round().clamp(-30.0, 30.0) as i16,
-            avance_early: (f(c, "earlyLaningPhaseGoldExpAdvantage") > 0.0) as u8,
-            avance_lane: (f(c, "laningPhaseGoldExpAdvantage") > 0.0) as u8,
-            solo_kills: u16_(f(c, "soloKills")),
-            plaques: u16_(f(c, "turretPlatesTaken")),
+            cs_10: somme(&["laneMinionsFirst10Minutes", "jungleCsBefore10Minutes"]).map(u16_),
+            avance_cs: defi("maxCsAdvantageOnLaneOpponent").map(|x| (x * 10.0).round() as i32),
+            avance_niveau: defi("maxLevelLeadLaneOpponent").map(|x| x.round().clamp(-30.0, 30.0) as i16),
+            avance_early: defi("earlyLaningPhaseGoldExpAdvantage").map(|x| (x > 0.0) as u8),
+            avance_lane: defi("laningPhaseGoldExpAdvantage").map(|x| (x > 0.0) as u8),
+            solo_kills: defi("soloKills").map(u16_),
+            plaques: defi("turretPlatesTaken").map(u16_),
             degats_objectifs: u32_(f(p, "damageDealtToObjectives")),
             degats_batiments: u32_(f(p, "damageDealtToBuildings")),
             tours: u16_(f(p, "turretTakedowns")),
-            epiques: u16_(f(c, "dragonTakedowns") + f(c, "baronTakedowns") + f(c, "riftHeraldTakedowns")),
+            epiques: somme(&["dragonTakedowns", "baronTakedowns", "riftHeraldTakedowns"]).map(u16_),
             balises: u16_(f(p, "wardsPlaced")),
-            pinks: u16_(defi_ou("controlWardsPlaced", "detectorWardsPlaced")),
-            balises_detruites: u16_(defi_ou("wardTakedowns", "wardsKilled")),
+            pinks: defi_ou("controlWardsPlaced", "detectorWardsPlaced").map(u16_),
+            balises_detruites: defi_ou("wardTakedowns", "wardsKilled").map(u16_),
             degats_subis: u32_(f(p, "totalDamageTaken")),
             degats_attenues: u32_(f(p, "damageSelfMitigated")),
-            soins_boucliers: u32_(f(c, "effectiveHealAndShielding")),
-            immobilisations: u16_(f(c, "enemyChampionImmobilizations")),
+            soins_boucliers: defi("effectiveHealAndShielding").map(u32_),
+            immobilisations: defi("enemyChampionImmobilizations").map(u16_),
         }
     }
 
@@ -135,7 +151,7 @@ impl Metriques {
         Metriques::default()
     }
 
-    /// Les colonnes TSV (toujours `NB_COLONNES`, dans cet ordre).
+    /// Les colonnes TSV (toujours `NB_COLONNES`, dans cet ordre ; "-" = inconnue).
     pub fn vers_colonnes(&self) -> String {
         let source = match self.source {
             Source::Absentes => 0,
@@ -144,27 +160,27 @@ impl Metriques {
         };
         let v: [String; NB_COLONNES] = [
             source.to_string(),
-            self.kp.to_string(),
-            self.part_degats.to_string(),
-            self.part_encaisses.to_string(),
-            self.cs_10.to_string(),
-            self.avance_cs.to_string(),
-            self.avance_niveau.to_string(),
-            self.avance_early.to_string(),
-            self.avance_lane.to_string(),
-            self.solo_kills.to_string(),
-            self.plaques.to_string(),
+            colonne(self.kp),
+            colonne(self.part_degats),
+            colonne(self.part_encaisses),
+            colonne(self.cs_10),
+            colonne(self.avance_cs),
+            colonne(self.avance_niveau),
+            colonne(self.avance_early),
+            colonne(self.avance_lane),
+            colonne(self.solo_kills),
+            colonne(self.plaques),
             self.degats_objectifs.to_string(),
             self.degats_batiments.to_string(),
             self.tours.to_string(),
-            self.epiques.to_string(),
+            colonne(self.epiques),
             self.balises.to_string(),
-            self.pinks.to_string(),
-            self.balises_detruites.to_string(),
+            colonne(self.pinks),
+            colonne(self.balises_detruites),
             self.degats_subis.to_string(),
             self.degats_attenues.to_string(),
-            self.soins_boucliers.to_string(),
-            self.immobilisations.to_string(),
+            colonne(self.soins_boucliers),
+            colonne(self.immobilisations),
         ];
         v.join("\t")
     }
@@ -178,33 +194,40 @@ impl Metriques {
         fn p<T: std::str::FromStr>(c: &[&str], i: usize) -> Option<T> {
             c[i].trim().parse().ok()
         }
+        // `o(i)` : colonne facultative. "-" = inconnue -> Some(None) ; abîmée -> None.
+        fn o<T: std::str::FromStr>(c: &[&str], i: usize) -> Option<Option<T>> {
+            match c[i].trim() {
+                "-" => Some(None),
+                x => x.parse().ok().map(Some),
+            }
+        }
         Some(Metriques {
             source: match p::<u8>(c, 0)? {
                 0 => Source::Absentes,
                 1 => Source::SansChallenges,
                 _ => Source::Completes,
             },
-            kp: p(c, 1)?,
-            part_degats: p(c, 2)?,
-            part_encaisses: p(c, 3)?,
-            cs_10: p(c, 4)?,
-            avance_cs: p(c, 5)?,
-            avance_niveau: p(c, 6)?,
-            avance_early: p(c, 7)?,
-            avance_lane: p(c, 8)?,
-            solo_kills: p(c, 9)?,
-            plaques: p(c, 10)?,
+            kp: o(c, 1)?,
+            part_degats: o(c, 2)?,
+            part_encaisses: o(c, 3)?,
+            cs_10: o(c, 4)?,
+            avance_cs: o(c, 5)?,
+            avance_niveau: o(c, 6)?,
+            avance_early: o(c, 7)?,
+            avance_lane: o(c, 8)?,
+            solo_kills: o(c, 9)?,
+            plaques: o(c, 10)?,
             degats_objectifs: p(c, 11)?,
             degats_batiments: p(c, 12)?,
             tours: p(c, 13)?,
-            epiques: p(c, 14)?,
+            epiques: o(c, 14)?,
             balises: p(c, 15)?,
-            pinks: p(c, 16)?,
-            balises_detruites: p(c, 17)?,
+            pinks: o(c, 16)?,
+            balises_detruites: o(c, 17)?,
             degats_subis: p(c, 18)?,
             degats_attenues: p(c, 19)?,
-            soins_boucliers: p(c, 20)?,
-            immobilisations: p(c, 21)?,
+            soins_boucliers: o(c, 20)?,
+            immobilisations: o(c, 21)?,
         })
     }
 }
@@ -213,7 +236,9 @@ impl Metriques {
 // 2. Mesures comparables
 // =====================================================================
 
-/// Une mesure comparable entre parties (voir `mesures`).
+/// Une mesure comparable entre parties (voir `mesures`). Les compteurs « par
+/// partie » sont ramenés à une partie de 30 minutes (x × 30 / durée) : une partie
+/// longue ne doit pas avoir l'air meilleure juste parce qu'elle a duré.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Mesure {
     /// Participation aux kills, en %.
@@ -227,28 +252,33 @@ pub enum Mesure {
     Cs10,
     VisionMin,
     BalisesMin,
-    /// Balises de contrôle posées (par partie).
+    /// Balises de contrôle posées, pour 30 min.
     Pinks,
+    /// Balises détruites, pour 30 min.
     BalisesDetruites,
     ObjectifsMin,
     BatimentsMin,
-    /// Dragons, barons, hérauts (participations).
+    /// Dragons, barons, hérauts (participations), pour 30 min.
     Epiques,
+    /// Tours (participations), pour 30 min.
     Tours,
+    /// Plaques, pour 30 min.
     Plaques,
     /// Plus grande avance de CS sur l'adversaire de lane.
     AvanceCs,
     /// % de parties avec +20 % d'or et d'XP sur l'adversaire à 7 min.
     AvanceEarly,
     AvanceNiveau,
+    /// Solo kills, pour 30 min.
     SoloKills,
     Kills10,
     Morts10,
     /// Dégâts subis + atténués par minute.
     EncaissesMin,
-    /// Dégâts subis + atténués par mort (survivre en encaissant).
-    EncaissesParMort,
+    /// Dégâts subis + atténués par vie, soit / (morts + 1) : 0 mort = une seule vie.
+    EncaissesParVie,
     SoinsMin,
+    /// Immobilisations de champions ennemis, pour 30 min.
     Immobilisations,
     /// Part des dégâts subis par l'équipe, en %.
     PartEncaisses,
@@ -280,14 +310,15 @@ pub const MESURES: [Mesure; NB_MESURES] = [
     Mesure::Kills10,
     Mesure::Morts10,
     Mesure::EncaissesMin,
-    Mesure::EncaissesParMort,
+    Mesure::EncaissesParVie,
     Mesure::SoinsMin,
     Mesure::Immobilisations,
     Mesure::PartEncaisses,
 ];
 
 impl Mesure {
-    /// Nom court dans le fichier de stats (ne JAMAIS changer : fichiers publiés).
+    /// Nom court dans le fichier de stats (ne JAMAIS changer le sens d'une clé
+    /// publiée : on en crée une nouvelle, l'ancienne est alors ignorée).
     pub fn cle(self) -> &'static str {
         match self {
             Mesure::Kp => "kp",
@@ -298,23 +329,23 @@ impl Mesure {
             Mesure::Cs10 => "cs10",
             Mesure::VisionMin => "vision_min",
             Mesure::BalisesMin => "balises_min",
-            Mesure::Pinks => "pinks",
-            Mesure::BalisesDetruites => "balises_detruites",
+            Mesure::Pinks => "pinks_30",
+            Mesure::BalisesDetruites => "balises_detruites_30",
             Mesure::ObjectifsMin => "objectifs_min",
             Mesure::BatimentsMin => "batiments_min",
-            Mesure::Epiques => "epiques",
-            Mesure::Tours => "tours",
-            Mesure::Plaques => "plaques",
+            Mesure::Epiques => "epiques_30",
+            Mesure::Tours => "tours_30",
+            Mesure::Plaques => "plaques_30",
             Mesure::AvanceCs => "avance_cs",
             Mesure::AvanceEarly => "avance_early",
             Mesure::AvanceNiveau => "avance_niveau",
-            Mesure::SoloKills => "solo_kills",
+            Mesure::SoloKills => "solo_kills_30",
             Mesure::Kills10 => "kills10",
             Mesure::Morts10 => "morts10",
             Mesure::EncaissesMin => "encaisses_min",
-            Mesure::EncaissesParMort => "encaisses_par_mort",
+            Mesure::EncaissesParVie => "encaisses_par_vie",
             Mesure::SoinsMin => "soins_min",
-            Mesure::Immobilisations => "immobilisations",
+            Mesure::Immobilisations => "immobilisations_30",
             Mesure::PartEncaisses => "part_encaisses",
         }
     }
@@ -326,44 +357,46 @@ impl Mesure {
 
 /// Les mesures d'une partie (None = inconnue pour cette partie).
 /// Les mesures « de base » (dégâts, or, CS, vision, kills, morts par minute) existent
-/// pour toute partie ; les autres demandent les métriques détaillées.
+/// pour toute partie ; les autres demandent les métriques détaillées, et un
+/// challenge absent reste inconnu.
 pub fn mesures(p: &ResumePartie) -> [Option<f32>; NB_MESURES] {
     let mut v = [None; NB_MESURES];
     let minutes = p.minutes();
     if minutes < 1.0 {
         return v;
     }
-    let par_min = |x: f64| Some((x / minutes as f64) as f32);
-    v[Mesure::DegatsMin as usize] = par_min(p.degats as f64);
-    v[Mesure::OrMin as usize] = par_min(p.or as f64);
-    v[Mesure::CsMin as usize] = par_min(p.cs as f64);
-    v[Mesure::VisionMin as usize] = par_min(p.vision as f64);
-    v[Mesure::Kills10 as usize] = par_min(p.kills as f64 * 10.0);
-    v[Mesure::Morts10 as usize] = par_min(p.morts as f64 * 10.0);
+    let par_min = |x: f64| (x / minutes as f64) as f32;
+    // Un compteur de la partie ramené à 30 minutes.
+    let pour_30 = |x: f64| (x * 30.0 / minutes as f64) as f32;
+    v[Mesure::DegatsMin as usize] = Some(par_min(p.degats as f64));
+    v[Mesure::OrMin as usize] = Some(par_min(p.or as f64));
+    v[Mesure::CsMin as usize] = Some(par_min(p.cs as f64));
+    v[Mesure::VisionMin as usize] = Some(par_min(p.vision as f64));
+    v[Mesure::Kills10 as usize] = Some(par_min(p.kills as f64 * 10.0));
+    v[Mesure::Morts10 as usize] = Some(par_min(p.morts as f64 * 10.0));
     let Some(m) = p.metriques.filter(|m| m.source != Source::Absentes) else { return v };
     let encaisses = m.degats_subis as f64 + m.degats_attenues as f64;
-    v[Mesure::BalisesMin as usize] = par_min(m.balises as f64);
-    v[Mesure::Pinks as usize] = Some(m.pinks as f32);
-    v[Mesure::BalisesDetruites as usize] = Some(m.balises_detruites as f32);
-    v[Mesure::ObjectifsMin as usize] = par_min(m.degats_objectifs as f64);
-    v[Mesure::BatimentsMin as usize] = par_min(m.degats_batiments as f64);
-    v[Mesure::Tours as usize] = Some(m.tours as f32);
-    v[Mesure::EncaissesMin as usize] = par_min(encaisses);
-    v[Mesure::EncaissesParMort as usize] = Some((encaisses / p.morts.max(1) as f64) as f32);
-    if m.source == Source::Completes {
-        v[Mesure::Kp as usize] = Some(m.kp as f32 / 10.0);
-        v[Mesure::PartDegats as usize] = Some(m.part_degats as f32 / 10.0);
-        v[Mesure::PartEncaisses as usize] = Some(m.part_encaisses as f32 / 10.0);
-        v[Mesure::Cs10 as usize] = Some(m.cs_10 as f32);
-        v[Mesure::Epiques as usize] = Some(m.epiques as f32);
-        v[Mesure::Plaques as usize] = Some(m.plaques as f32);
-        v[Mesure::AvanceCs as usize] = Some(m.avance_cs as f32 / 10.0);
-        v[Mesure::AvanceEarly as usize] = Some(m.avance_early as f32 * 100.0);
-        v[Mesure::AvanceNiveau as usize] = Some(m.avance_niveau as f32);
-        v[Mesure::SoloKills as usize] = Some(m.solo_kills as f32);
-        v[Mesure::SoinsMin as usize] = par_min(m.soins_boucliers as f64);
-        v[Mesure::Immobilisations as usize] = Some(m.immobilisations as f32);
-    }
+    v[Mesure::BalisesMin as usize] = Some(par_min(m.balises as f64));
+    v[Mesure::ObjectifsMin as usize] = Some(par_min(m.degats_objectifs as f64));
+    v[Mesure::BatimentsMin as usize] = Some(par_min(m.degats_batiments as f64));
+    v[Mesure::Tours as usize] = Some(pour_30(m.tours as f64));
+    v[Mesure::EncaissesMin as usize] = Some(par_min(encaisses));
+    v[Mesure::EncaissesParVie as usize] = Some((encaisses / (p.morts as f64 + 1.0)) as f32);
+    // Challenges (et replis) : seulement s'ils sont connus.
+    v[Mesure::Pinks as usize] = m.pinks.map(|x| pour_30(x as f64));
+    v[Mesure::BalisesDetruites as usize] = m.balises_detruites.map(|x| pour_30(x as f64));
+    v[Mesure::Kp as usize] = m.kp.map(|x| x as f32 / 10.0);
+    v[Mesure::PartDegats as usize] = m.part_degats.map(|x| x as f32 / 10.0);
+    v[Mesure::PartEncaisses as usize] = m.part_encaisses.map(|x| x as f32 / 10.0);
+    v[Mesure::Cs10 as usize] = m.cs_10.map(|x| x as f32);
+    v[Mesure::Epiques as usize] = m.epiques.map(|x| pour_30(x as f64));
+    v[Mesure::Plaques as usize] = m.plaques.map(|x| pour_30(x as f64));
+    v[Mesure::AvanceCs as usize] = m.avance_cs.map(|x| x as f32 / 10.0);
+    v[Mesure::AvanceEarly as usize] = m.avance_early.map(|x| x as f32 * 100.0);
+    v[Mesure::AvanceNiveau as usize] = m.avance_niveau.map(|x| x as f32);
+    v[Mesure::SoloKills as usize] = m.solo_kills.map(|x| pour_30(x as f64));
+    v[Mesure::SoinsMin as usize] = m.soins_boucliers.map(|x| par_min(x as f64));
+    v[Mesure::Immobilisations as usize] = m.immobilisations.map(|x| pour_30(x as f64));
     v
 }
 
@@ -510,8 +543,8 @@ impl References {
 }
 
 /// Valeurs PAR DÉFAUT (moyenne, écart-type) par rôle, quand aucune référence
-/// collectée n'existe. Ordres de grandeur d'une partie classée Or-Émeraude (~30 min),
-/// estimés à la main d'après les statistiques publiques habituelles : c'est
+/// collectée n'existe. Ordres de grandeur d'une partie classée Or-Émeraude d'environ
+/// 30 min (les compteurs « pour 30 min » valent donc ceux d'une partie), estimés à la main d'après les statistiques publiques habituelles : c'est
 /// APPROXIMATIF, et l'affichage le dit (« référence approximative »).
 /// Ordre des colonnes : top, jungle, middle, bottom, utility.
 fn reference_par_defaut(role: &str, mesure: Mesure) -> (f32, f32) {
@@ -539,7 +572,8 @@ fn reference_par_defaut(role: &str, mesure: Mesure) -> (f32, f32) {
         Mesure::Kills10 => [(1.8, 1.1), (2.0, 1.1), (2.2, 1.2), (2.5, 1.3), (0.6, 0.5)],
         Mesure::Morts10 => [(1.8, 0.8), (1.8, 0.8), (1.8, 0.8), (1.8, 0.8), (2.0, 0.8)],
         Mesure::EncaissesMin => [(1400.0, 450.0), (1300.0, 400.0), (800.0, 300.0), (700.0, 250.0), (750.0, 350.0)],
-        Mesure::EncaissesParMort => [(8000.0, 5000.0), (7000.0, 4000.0), (5000.0, 3000.0), (4500.0, 2500.0), (4500.0, 3000.0)],
+        // Divisé par (morts + 1) : un peu moins que « par mort ».
+        Mesure::EncaissesParVie => [(6500.0, 4000.0), (5500.0, 3200.0), (4000.0, 2400.0), (3600.0, 2000.0), (3600.0, 2400.0)],
         Mesure::SoinsMin => [(30.0, 40.0), (30.0, 40.0), (30.0, 40.0), (40.0, 40.0), (300.0, 250.0)],
         Mesure::Immobilisations => [(15.0, 10.0), (20.0, 12.0), (20.0, 12.0), (12.0, 8.0), (35.0, 18.0)],
         Mesure::PartEncaisses => [(24.0, 7.0), (24.0, 7.0), (16.0, 6.0), (14.0, 5.0), (16.0, 6.0)],
@@ -590,16 +624,43 @@ pub mod tests {
     fn lit_les_challenges_et_tolere_les_absents() {
         let m = Metriques::depuis_participant(&participant_complet());
         assert_eq!(m.source, Source::Completes);
-        assert_eq!((m.kp, m.part_degats, m.part_encaisses), (623, 310, 150));
-        assert_eq!((m.cs_10, m.avance_cs, m.avance_niveau), (82, 225, 2));
-        assert_eq!((m.avance_early, m.avance_lane, m.solo_kills, m.plaques), (1, 0, 3, 2));
-        assert_eq!((m.epiques, m.pinks, m.balises_detruites, m.soins_boucliers), (3, 5, 6, 1235));
-        // Sans challenges : replis sur les champs du participant, le reste à 0.
+        assert_eq!((m.kp, m.part_degats, m.part_encaisses), (Some(623), Some(310), Some(150)));
+        assert_eq!((m.cs_10, m.avance_cs, m.avance_niveau), (Some(82), Some(225), Some(2)));
+        assert_eq!((m.avance_early, m.avance_lane, m.solo_kills, m.plaques), (Some(1), Some(0), Some(3), Some(2)));
+        assert_eq!((m.epiques, m.pinks, m.balises_detruites, m.soins_boucliers), (Some(3), Some(5), Some(6), Some(1235)));
+        // Un challenge absent est INCONNU (None), pas 0 ; et la mesure aussi.
         let mut p = participant_complet();
+        p["challenges"].as_object_mut().unwrap().remove("soloKills");
+        p["challenges"].as_object_mut().unwrap().remove("maxCsAdvantageOnLaneOpponent");
+        let m = Metriques::depuis_participant(&p);
+        assert_eq!((m.solo_kills, m.avance_cs, m.kp), (None, None, Some(623)));
+        // Sans challenges : replis sur les champs du participant, le reste inconnu.
         p.as_object_mut().unwrap().remove("challenges");
         let m = Metriques::depuis_participant(&p);
         assert_eq!(m.source, Source::SansChallenges);
-        assert_eq!((m.pinks, m.balises_detruites, m.kp, m.tours), (3, 4, 0, 3));
+        assert_eq!((m.pinks, m.balises_detruites, m.kp, m.tours), (Some(3), Some(4), None, 3));
+    }
+
+    #[test]
+    fn mesures_ramenees_a_la_duree_et_inconnues() {
+        let mut partie = json!({"metadata": {"matchId": "X"},
+            "info": {"gameStartTimestamp": 1000, "gameDuration": 900, "queueId": 420,
+                     "gameVersion": "16.23.1", "participants": [participant_complet()]}});
+        let r = ResumePartie::depuis_match(&partie, "p").unwrap();
+        let v = mesures(&r);
+        // Partie de 15 min : 5 pinks -> 10 pour 30 min ; 3 solo kills -> 6.
+        assert_eq!(v[Mesure::Pinks as usize], Some(10.0));
+        assert_eq!(v[Mesure::SoloKills as usize], Some(6.0));
+        // 27 000 encaissés, 2 morts -> 3 vies -> 9 000.
+        assert_eq!(v[Mesure::EncaissesParVie as usize], Some(9000.0));
+        partie["info"]["participants"][0]["challenges"].as_object_mut().unwrap().remove("soloKills");
+        let r = ResumePartie::depuis_match(&partie, "p").unwrap();
+        assert_eq!(mesures(&r)[Mesure::SoloKills as usize], None);
+        // Les références n'enregistrent pas une mesure inconnue.
+        let mut refs = References::default();
+        refs.ajouter(3, &r);
+        assert!(refs.somme(3, "middle", Mesure::SoloKills).is_none());
+        assert_eq!(refs.somme(3, "middle", Mesure::Pinks).unwrap().parties, 1);
     }
 
     #[test]
@@ -610,6 +671,11 @@ pub mod tests {
         assert_eq!(c.len(), NB_COLONNES);
         assert_eq!(Metriques::depuis_colonnes(&c), Some(m));
         assert_eq!(Metriques::depuis_colonnes(&c[..5]), None);
+        // Valeurs inconnues : écrites "-", relues None.
+        let inconnues = Metriques { solo_kills: None, kp: None, ..m };
+        let texte = inconnues.vers_colonnes();
+        assert!(texte.contains("\t-\t"));
+        assert_eq!(Metriques::depuis_colonnes(&texte.split('\t').collect::<Vec<_>>()), Some(inconnues));
     }
 
     #[test]

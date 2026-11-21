@@ -56,7 +56,6 @@ struct Etat {
     lcu: Option<Lcu>,
     api: Option<Arc<RiotApi>>,
     mon_puuid: Option<Box<str>>,
-    reglages: crate::stockage::Reglages,
     cs: SuiviChampSelect,
     /// Champ select reçu avant que Data Dragon soit prêt : traité après.
     cs_en_attente: Option<ChampSelect>,
@@ -82,7 +81,6 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
         lcu: None,
         api,
         mon_puuid: None,
-        reglages,
         cs: SuiviChampSelect::default(),
         cs_en_attente: None,
         partie_scoutee: false,
@@ -119,6 +117,8 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
             Evenement::DonneesPretes(d) => {
                 preparer_stats_en_fond(&d);
                 etat.donnees = Some(d.clone());
+                let partage = d.clone();
+                affichage::modifier(|e| e.donnees = Some(partage)); // noms pour l'interface
                 if let Some(cs) = etat.cs_en_attente.take() {
                     champ_select(&mut etat, &d, cs, &tx);
                 }
@@ -140,6 +140,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
             Evenement::Historique(maj) => crate::historique::publier(*maj, etat.donnees.as_deref()),
             Evenement::DemandeFiche { puuid } => demander_fiche(&etat, &puuid, &tx),
             Evenement::Fiche(f) => crate::fiche::publier(*f, etat.donnees.as_deref()),
+            Evenement::Fenetre => suivre_si_utile(&mut etat, &tx),
             Evenement::Quitter => break,
         }
     }
@@ -171,17 +172,29 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         }
     }
     scouter_si_besoin(etat, p, tx);
-    // Le suivi de partie (port 2999) ne tourne QUE pendant la partie, et seulement
-    // si quelqu'un s'en sert : la console, l'enregistreur (overlay plus tard).
-    // En rejeu, les instantanés viennent du fichier, pas du jeu.
-    let utile = etat.mode == Mode::Console || (etat.mode == Mode::Tray && crate::enregistreur::actif());
-    let vivant = etat.suivi.as_ref().is_some_and(SuiviPartie::vivant);
-    match (p.en_partie() && utile, vivant) {
-        (true, false) => etat.suivi = Some(live::suivre(tx.clone())),
-        (false, _) if !p.en_partie() => etat.suivi = None,
-        _ => {}
-    }
     etat.phase = p;
+    suivre_si_utile(etat, tx);
+}
+
+/// Le suivi de partie (port 2999) ne tourne QUE pendant la partie, et seulement
+/// si quelqu'un s'en sert : la console, l'enregistreur, ou la fenêtre ouverte
+/// (onglet Partie). L'overlay n'en a pas besoin (il montre les rangs).
+/// En rejeu, les instantanés viennent du fichier, pas du jeu.
+/// Rappelée à chaque changement de phase ET quand la fenêtre s'ouvre / se ferme.
+fn suivre_si_utile(etat: &mut Etat, tx: &Sender<Evenement>) {
+    let utile = match etat.mode {
+        Mode::Console => true,
+        Mode::Tray => crate::enregistreur::actif() || crate::ui::fenetre_ouverte(),
+        Mode::Rejeu => false,
+    };
+    let vivant = etat.suivi.as_ref().is_some_and(SuiviPartie::vivant);
+    if etat.phase.en_partie() && utile {
+        if !vivant {
+            etat.suivi = Some(live::suivre(tx.clone()));
+        }
+    } else {
+        etat.suivi = None; // lâcher le suivi arrête son thread
+    }
 }
 
 /// Fiche joueur à la demande (F44). Conformité Riot : seulement moi, ou un joueur
@@ -386,9 +399,11 @@ fn runes(etat: &Etat, d: &DonneesJeu, champion: u16, role: Option<&str>) {
 
     // Application dans le client (pas en rejeu ; désactivable dans reglages.txt).
     let Some(lcu) = etat.lcu.clone().filter(|_| etat.mode != Mode::Rejeu) else { return };
-    let runes_auto = etat.reglages.get("runes") != Some("non");
-    let sorts_auto = etat.reglages.get("sorts") != Some("non");
-    let flash_sur_f = etat.reglages.get("flash").is_some_and(|f| f.eq_ignore_ascii_case("f"));
+    // Relus à chaque fois : un changement fait dans l'onglet Réglages compte tout de suite.
+    let reglages = crate::stockage::Reglages::charger();
+    let runes_auto = reglages.get("runes") != Some("non");
+    let sorts_auto = reglages.get("sorts") != Some("non");
+    let flash_sur_f = reglages.get("flash").is_some_and(|f| f.eq_ignore_ascii_case("f"));
     let page = r.page;
     let nom = format!("{} {}", d.nom_champion(champion), r.role.as_deref().unwrap_or(""));
     std::thread::spawn(move || {
@@ -484,7 +499,7 @@ fn preparer_stats_en_fond(d: &Arc<DonneesJeu>) {
         // RAM : ~80 octets par ligne (nom compris).
         log!("Tier list du patch {} : {} lignes ({} parties, ~{:.1} Ko)", t.patch, lignes.len(), t.parties, (lignes.len() * 80) as f32 / 1024.0);
         let vue = affichage::VueTierList { patch: t.patch, parties: t.parties, lignes };
-        affichage::modifier(|e| e.tier_list = Some(vue));
+        affichage::modifier(|e| e.tier_list = Some(std::sync::Arc::new(vue)));
     });
 }
 
@@ -649,7 +664,7 @@ fn objets(etat: &mut Etat, d: &DonneesJeu, cs: &ChampSelect) {
 
     // Item set dans le client (pas en rejeu, pas si désactivé, il faut mon summonerId).
     let Some(lcu) = etat.lcu.clone().filter(|_| etat.mode != Mode::Rejeu) else { return };
-    if etat.reglages.get("objets") == Some("non") {
+    if crate::stockage::Reglages::charger().get("objets") == Some("non") { // relu : modifiable dans la fenêtre
         return;
     }
     let Some(summoner_id) = etat.mon_summoner_id else {

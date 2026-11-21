@@ -108,6 +108,9 @@ fn boucle(tx: Sender<Evenement>) {
 fn memoriser_dossier(reglages: &mut crate::stockage::Reglages, dossier: &std::path::Path) {
     let texte = dossier.to_string_lossy();
     if reglages.get("dossier_lol") != Some(&texte) {
+        // Relire le fichier juste avant d'écrire : la fenêtre (onglet Réglages) a pu le
+        // modifier depuis ; sinon on écraserait ses changements avec une vieille copie.
+        *reglages = crate::stockage::Reglages::charger();
         reglages.set("dossier_lol", &texte);
         let _ = reglages.sauver();
     }

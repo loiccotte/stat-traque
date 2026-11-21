@@ -379,6 +379,12 @@ fn preparer_stats_en_fond(d: &Arc<DonneesJeu>) {
         let Some(t) = stats::trouver_fichier(&patch).and_then(|f| stats::tier_list_depuis_fichier(&f, None)) else {
             return;
         };
+        // Fichier d'un ancien format (sans lignes C) ou trop peu de parties :
+        // on ne publie pas une tier list vide.
+        if t.lignes.is_empty() {
+            log!("Tier list : pas de données exploitables pour le patch {patch} (ancien format ou trop peu de parties).");
+            return;
+        }
         let lignes: Vec<affichage::VueTier> = t
             .lignes
             .iter()
@@ -408,10 +414,16 @@ fn stats_du_champ_select<'a>(
     d: &DonneesJeu,
     cs: &ChampSelect,
 ) -> Option<&'a stats::Stats> {
-    let mut champions: Vec<u16> = cs.ennemis.iter().copied().chain(std::iter::once(cs.champion)).filter(|&c| c != 0).collect();
+    // Champions utiles : les ennemis visibles + le mien (0 = pas encore choisi).
+    let mut champions: Vec<u16> = cs.ennemis.to_vec();
+    champions.push(cs.champion);
+    champions.retain(|&c| c != 0);
     champions.sort_unstable();
     champions.dedup();
-    if cache.as_ref().is_none_or(|(deja, _)| *deja != champions) {
+    // On ne relit le fichier que si un champion manque dans le cache (un champion
+    // qui SORT de la liste, ex. un survol abandonné, ne coûte aucune relecture).
+    let manque = |deja: &Vec<u16>| champions.iter().any(|c| !deja.contains(c));
+    if cache.as_ref().is_none_or(|(deja, _)| manque(deja)) {
         let fichier = stats::trouver_fichier(&stats::patch_court(&d.version))?;
         let s = stats::Stats::charger_filtre(&fichier, &champions)?;
         log!("  (stats lues pour {} champions : ~{:.1} Ko en RAM)", champions.len(), s.memoire_estimee() as f32 / 1024.0);
@@ -502,9 +514,8 @@ fn lane(etat: &mut Etat, d: &DonneesJeu, cs: &ChampSelect) {
         let v = e.champ_select.get_or_insert_with(VueChampSelect::default);
         v.adversaire_lane = nom_adv;
         v.matchup = vue_mu;
-        if !verrouille {
-            v.contre_picks = contre;
-        }
+        // Après le verrouillage, les contre-picks ne servent plus : on les vide.
+        v.contre_picks = if verrouille { Vec::new() } else { contre };
         v.meilleurs_matchups = meilleurs;
         v.pires_matchups = pires;
     });

@@ -111,7 +111,8 @@ fn complet(racine: &Path, version: &str) -> bool {
 
 /// Première ligne de `objets.tsv` au format actuel. Les anciens caches (format 1 :
 /// `id<TAB>nom` seulement) n'ont pas cette ligne -> on les re-télécharge.
-const FORMAT_OBJETS: &str = "#format\t2";
+/// (Format 3 : ajoute les drapeaux D et R ; un cache au format 2 est re-téléchargé.)
+const FORMAT_OBJETS: &str = "#format\t3";
 
 /// Complet ET au format actuel. On ne lit que les premiers octets du fichier.
 fn a_jour(racine: &Path, version: &str) -> bool {
@@ -151,6 +152,7 @@ pub fn charger() -> Option<DonneesJeu> {
     let version = choisir_version(&racine)?;
     let dossier = racine.join(&version);
     let lire = |nom: &str| std::fs::read_to_string(dossier.join(nom)).unwrap_or_default();
+    let (objets, genres_objets) = lire_objets(&lire("objets.tsv"));
     Some(DonneesJeu {
         champions: lire_tsv(&lire("champions.tsv"))
             .map(|(cle, reste)| {
@@ -160,25 +162,42 @@ pub fn charger() -> Option<DonneesJeu> {
             .collect(),
         sorts: lire_tsv(&lire("sorts.tsv")).map(|(k, v)| (k, v.into())).collect(),
         runes: lire_tsv(&lire("runes.tsv")).map(|(k, v)| (k, v.into())).collect(),
-        objets: lire_tsv(&lire("objets.tsv")).map(|(k, v)| (k, nom_objet_tsv(v).into())).collect(),
-        genres_objets: lire_tsv(&lire("objets.tsv")).filter_map(|(k, v)| Some((k, genre_objet_tsv(v)?))).collect(),
+        objets,
+        genres_objets,
         version,
     })
+}
+
+/// Lit objets.tsv UNE fois et en tire les deux tables (noms, genres).
+fn lire_objets(texte: &str) -> (HashMap<u32, Box<str>>, HashMap<u32, GenreObjet>) {
+    let mut noms = HashMap::new();
+    let mut genres = HashMap::new();
+    for (id, reste) in lire_tsv::<u32>(texte) {
+        noms.insert(id, nom_objet_tsv(reste).into());
+        if let Some(g) = genre_objet_tsv(reste) {
+            genres.insert(id, g);
+        }
+    }
+    (noms, genres)
 }
 
 // ---------- objets.tsv (format 2) ----------
 // Une ligne par objet : id<TAB>nom<TAB>prix total<TAB>profondeur<TAB>drapeaux
 // Drapeaux (lettres, "-" si aucune) :
-//   F = final (le champ `into` de Riot est vide : il ne s'améliore en rien)
+//   F = final : son `into` ne contient AUCUN objet achetable sur la Faille
+//       (Manamune -> Muramana : Muramana ne s'achète pas, donc Manamune est final)
 //   A = achetable sur la Faille (carte 11, en boutique, pas réservé à un champion)
+//   D = dérivé : se construit à partir d'autres objets (`from` non vide)
 //   B = bottes (tag "Boots"), sauf les Bottes de base (elles n'ont pas de `from`)
 //   C = consommable (potions, élixirs...)
+//   R = transformation (`specialRecipe`) sur la Faille : Muramana, Séraphin,
+//       Fimbulwinter... Pas achetable, mais c'est bien un objet complet.
 // On garde les infos brutes (prix, profondeur) : la règle « légendaire » peut
 // évoluer sans re-télécharger.
 
-/// Prix minimum d'un objet légendaire (les moins chers coûtent ~2 200 PO ;
-/// les objets « épiques » intermédiaires coûtent moins de 1 600 PO).
-const PRIX_MIN_LEGENDAIRE: u32 = 2000;
+/// Prix minimum d'un objet complet. Assez bas pour garder Mejai (1 500 PO),
+/// assez haut pour écarter les petits objets finaux bon marché.
+const PRIX_MIN_LEGENDAIRE: u32 = 1000;
 
 /// Colonne « nom » d'une ligne sans l'id (ancien et nouveau format).
 fn nom_objet_tsv(reste: &str) -> &str {
@@ -191,16 +210,20 @@ fn genre_objet_tsv(reste: &str) -> Option<GenreObjet> {
     let prix: u32 = c.get(1)?.parse().ok()?;
     let drapeaux = *c.get(3)?;
     let a = |lettre: char| drapeaux.contains(lettre);
-    if !a('A') || a('C') {
+    if a('C') || !(a('A') || a('R')) {
         return None;
     }
+    // Bottes d'abord : des bottes « transformées » restent des bottes.
     if a('B') {
-        Some(GenreObjet::Bottes)
-    } else if a('F') && prix >= PRIX_MIN_LEGENDAIRE {
-        Some(GenreObjet::Legendaire)
-    } else {
-        None
+        return Some(GenreObjet::Bottes);
     }
+    // Transformation (Muramana...) : objet complet même s'il ne s'achète pas.
+    if a('R') {
+        return Some(GenreObjet::Legendaire);
+    }
+    // Final, construit à partir d'autres objets, et pas trop bon marché.
+    let legendaire = a('F') && a('D') && prix >= PRIX_MIN_LEGENDAIRE;
+    legendaire.then_some(GenreObjet::Legendaire)
 }
 
 /// Lit des lignes `id<TAB>reste`.
@@ -262,22 +285,33 @@ fn tsv_par_cle(v: &Value) -> Vec<String> {
 /// (l'id est la clé). Écrit le format 2 décrit plus haut.
 fn tsv_objets(v: &Value) -> Vec<String> {
     let mut lignes = vec![FORMAT_OBJETS.to_string()];
-    lignes.extend(v["data"].as_object().into_iter().flatten().filter_map(|(id, o)| {
+    let Some(data) = v["data"].as_object() else { return lignes };
+    // Objet sur la Faille et pas réservé (à un champion, ou à l'allié Ornn).
+    let sur_la_faille = |o: &Value| {
+        let reserve = |cle: &str| o[cle].as_str().is_some_and(|s| !s.is_empty());
+        o["maps"]["11"] == true && !reserve("requiredChampion") && !reserve("requiredAlly")
+    };
+    let achetable = |o: &Value| sur_la_faille(o) && o["gold"]["purchasable"] != false && o["inStore"] != false;
+    // 1er passage : les ids achetables sur la Faille (pour le drapeau F).
+    let achetables: std::collections::HashSet<&str> =
+        data.iter().filter(|(_, o)| achetable(o)).map(|(id, _)| id.as_str()).collect();
+    lignes.extend(data.iter().filter_map(|(id, o)| {
         // Champ absent ou liste vide : même chose pour nous.
         let vide = |cle: &str| o[cle].as_array().is_none_or(|t| t.is_empty());
-        let reserve = |cle: &str| o[cle].as_str().is_some_and(|s| !s.is_empty());
-        let achetable = o["gold"]["purchasable"] != false
-            && o["maps"]["11"] == true
-            && o["inStore"] != false
-            && !reserve("requiredChampion")
-            && !reserve("requiredAlly");
         let a_tag = |t: &str| o["tags"].as_array().is_some_and(|ts| ts.iter().any(|x| x == t));
+        // Final : rien d'achetable au-dessus de lui.
+        let final_ = o["into"]
+            .as_array()
+            .is_none_or(|t| !t.iter().any(|x| x.as_str().is_some_and(|i| achetables.contains(i))));
+        let transformation = sur_la_faille(o) && o["specialRecipe"].as_u64().is_some_and(|r| r != 0);
         let mut drapeaux = String::new();
         for (oui, lettre) in [
-            (vide("into"), 'F'),
-            (achetable, 'A'),
+            (final_, 'F'),
+            (achetable(o), 'A'),
+            (!vide("from"), 'D'),
             (a_tag("Boots") && !vide("from"), 'B'),
             (a_tag("Consumable") || o["consumed"] == true, 'C'),
+            (transformation, 'R'),
         ] {
             if oui {
                 drapeaux.push(lettre);
@@ -356,19 +390,32 @@ mod tests {
               "3108":{"name":"Codex","gold":{"total":900,"purchasable":true},"into":["3089"],"maps":{"11":true}},
               "2003":{"name":"Potion","gold":{"total":50,"purchasable":true},"tags":["Consumable"],"maps":{"11":true}},
               "7002":{"name":"Objet d'Ornn","gold":{"total":3200,"purchasable":false},"requiredAlly":"Ornn","maps":{"11":true}},
-              "443089":{"name":"Rabadon (Arena)","gold":{"total":3600,"purchasable":true},"maps":{"11":false,"30":true}}
+              "443089":{"name":"Rabadon (Arena)","gold":{"total":3600,"purchasable":true},"maps":{"11":false,"30":true}},
+              "1082":{"name":"Sceau noir","gold":{"total":350,"purchasable":true},"into":["3041"],"maps":{"11":true}},
+              "3041":{"name":"Mejai","gold":{"total":1500,"purchasable":true},"from":["1082"],"maps":{"11":true}},
+              "1055":{"name":"Lame de Doran","gold":{"total":450,"purchasable":true},"maps":{"11":true}},
+              "3070":{"name":"Larme","gold":{"total":400,"purchasable":true},"into":["3004"],"maps":{"11":true}},
+              "3004":{"name":"Manamune","gold":{"total":2900,"purchasable":true},"from":["3070"],"into":["3042"],"maps":{"11":true}},
+              "3042":{"name":"Muramana","gold":{"total":2900,"purchasable":false},"specialRecipe":3004,"maps":{"11":true}}
             }}"#,
         )
         .unwrap();
         let lignes = tsv_objets(&v);
         assert_eq!(lignes[0], FORMAT_OBJETS);
-        assert!(lignes.contains(&"3089\tCoiffe de Rabadon\t3600\t3\tFA".to_string()), "{lignes:?}");
+        assert!(lignes.contains(&"3089\tCoiffe de Rabadon\t3600\t3\tFAD".to_string()), "{lignes:?}");
         let texte = lignes.join("\n");
         let genres: HashMap<u32, GenreObjet> =
             lire_tsv(&texte).filter_map(|(k, r)| Some((k, genre_objet_tsv(r)?))).collect();
         assert_eq!(genres.get(&3089), Some(&GenreObjet::Legendaire));
         assert_eq!(genres.get(&3020), Some(&GenreObjet::Bottes));
-        assert_eq!(genres.len(), 2, "ni Bottes de base, ni composant, ni potion, ni Ornn, ni Arena : {genres:?}");
+        // Mejai (< 2 000 PO), Manamune (son `into` ne s'achète pas) et Muramana (transformation).
+        for id in [3041, 3004, 3042] {
+            assert_eq!(genres.get(&id), Some(&GenreObjet::Legendaire), "objet {id}");
+        }
+        assert_eq!(genres.len(), 5, "ni Bottes de base, ni composant, ni potion, ni Doran, ni Ornn, ni Arena : {genres:?}");
+        // Lecture unique du fichier : mêmes résultats.
+        let (noms, genres_lus) = lire_objets(&texte);
+        assert_eq!((noms.len(), genres_lus), (13, genres.clone()));
         // Le nom se lit pareil dans les deux formats.
         let nom = lire_tsv::<u32>(&texte).find(|(k, _)| *k == 3089).map(|(_, r)| nom_objet_tsv(r));
         assert_eq!(nom, Some("Coiffe de Rabadon"));

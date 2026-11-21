@@ -118,6 +118,8 @@ pub struct Stats {
     bottes: HashMap<Cle, HashMap<u32, Compteur>>,
     /// Nombre de parties où chaque champion a été banni (une fois par partie).
     bans: HashMap<u16, u32>,
+    /// true si le texte lu avait la ligne `#parties` (format actuel).
+    format_actuel: bool,
 }
 
 /// Lit la page de runes d'un participant match-v5.
@@ -221,6 +223,24 @@ impl TierList {
     }
 }
 
+/// Ce qu'`ajouter_partie` a fait d'une partie.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ajout {
+    /// Comptée dans les stats.
+    Comptee,
+    /// Partie d'un autre patch (la collecte passe alors au joueur suivant :
+    /// ses parties suivantes sont encore plus anciennes).
+    AutrePatch,
+    /// Remake, reddition précoce ou JSON illisible : pas comptée.
+    Ignoree,
+}
+
+/// Fichier publié : combinaisons (pages, sorts, matchups, objets) vues au moins 3 fois.
+const MIN_PARTIES_PUBLICATION: u32 = 3;
+
+/// En dessous de 5 minutes, une partie est un remake : on ne la compte pas.
+const DUREE_MIN_PARTIE: u64 = 300;
+
 // Réglages des calculs (choisis pour un échantillon de quelques milliers de parties).
 /// Parties fictives ajoutées pour lisser un matchup (moins que pour une page de
 /// runes : un matchup précis a beaucoup moins de parties).
@@ -267,17 +287,22 @@ impl Stats {
         Self { patch: patch.to_string(), ..Default::default() }
     }
 
-    /// Compte les 10 participants d'une partie match-v5. Renvoie false si la
-    /// partie n'est pas du bon patch (ou illisible).
+    /// Compte les 10 participants d'une partie match-v5.
     /// `genre` dit si un objet est légendaire / des bottes (Data Dragon) : les autres
     /// objets (composants, potions...) ne sont pas comptés.
-    pub fn ajouter_partie(&mut self, partie: &Value, genre: &dyn Fn(u32) -> Option<GenreObjet>) -> bool {
+    pub fn ajouter_partie(&mut self, partie: &Value, genre: &dyn Fn(u32) -> Option<GenreObjet>) -> Ajout {
         let info = &partie["info"];
         let version = info["gameVersion"].as_str().unwrap_or("");
         if !version.starts_with(&format!("{}.", self.patch)) {
-            return false;
+            return Ajout::AutrePatch;
         }
-        let Some(participants) = info["participants"].as_array() else { return false };
+        let Some(participants) = info["participants"].as_array() else { return Ajout::Ignoree };
+        // Remake ou reddition précoce : les objets et le résultat ne veulent rien dire.
+        let remake = participants.iter().any(|p| p["gameEndedInEarlySurrender"] == true);
+        let trop_courte = info["gameDuration"].as_u64().is_some_and(|s| s < DUREE_MIN_PARTIE);
+        if remake || trop_courte {
+            return Ajout::Ignoree;
+        }
         self.parties += 1;
         // Qui joue où : (équipe, rôle, champion). Sert à trouver l'adversaire de lane.
         let places: Vec<(u64, &'static str, u16)> = participants
@@ -340,7 +365,7 @@ impl Stats {
         for c in bannis {
             *self.bans.entry(c).or_default() += 1;
         }
-        true
+        Ajout::Comptee
     }
 
     /// Texte du fichier. `min_parties` : on n'écrit pas les combinaisons trop rares
@@ -405,6 +430,7 @@ impl Stats {
             }
             "#parties" => {
                 self.parties = c.get(1).and_then(|x| x.parse().ok()).unwrap_or(0);
+                self.format_actuel = true;
                 return;
             }
             _ => {}
@@ -475,7 +501,9 @@ impl Stats {
         }
     }
 
-    /// Lit un texte complet. `seulement` : ne garder qu'un champion (lecture économe en RAM).
+    /// Lit un texte déjà en mémoire. `seulement` : ne garder qu'un champion.
+    /// Sert aux tests ; l'app lit les fichiers en flux (`charger_filtre`, `charger_tout`).
+    #[cfg(test)]
     pub fn depuis_texte(texte: &str, seulement: Option<u16>) -> Self {
         let mut s = Stats::default();
         for ligne in texte.lines() {
@@ -494,8 +522,31 @@ impl Stats {
         Some(s)
     }
 
+    /// Lit TOUT le fichier (ligne par ligne). Réservé à la commande `collecter`,
+    /// jamais utilisé par l'app en champ select.
+    pub fn charger_tout(chemin: &Path) -> Option<Self> {
+        let mut s = Stats::default();
+        lire_lignes(chemin, |l| s.lire_ligne(l, &|_, _| true))?;
+        s.completer_ancien_format();
+        Some(s)
+    }
+
     pub fn nombre_parties_vues(&self) -> u32 {
         self.parties
+    }
+
+    /// false pour un fichier d'avant les lignes `#parties` / `C` / `M` / `O` / `B` :
+    /// la collecte repart alors de zéro (sinon les nouvelles lignes ne
+    /// couvriraient qu'une partie des parties déjà comptées).
+    pub fn format_actuel(&self) -> bool {
+        self.format_actuel
+    }
+
+    /// Texte du fichier PUBLIÉ (téléchargé par l'app) : sans les combinaisons vues
+    /// moins de 3 fois (les totaux `C` et les bans `B` restent complets). Le fichier
+    /// de collecte, lui, garde tout pour pouvoir continuer à cumuler.
+    pub fn vers_texte_publication(&self) -> String {
+        self.vers_texte(MIN_PARTIES_PUBLICATION)
     }
 
     /// RAM occupée par les tables (approximation : cases réservées des tables).
@@ -633,8 +684,13 @@ impl Stats {
     /// Objets conseillés : les légendaires et bottes les plus présents en fin de
     /// partie. Même repli que les runes si le rôle a trop peu de parties.
     pub fn conseil_objets(&self, champion: u16, role: Option<&str>) -> Option<ConseilObjets> {
+        // Parties du champion à un rôle (ou à tous ses rôles si `r` vaut None).
         let total = |r: Option<&str>| -> u32 {
-            self.totaux.iter().filter(|((c, ro), _)| *c == champion && r.is_none_or(|x| x == *ro)).map(|(_, n)| n.parties).sum()
+            self.totaux
+                .iter()
+                .filter(|((c, ro), _)| *c == champion && r.is_none_or(|x| x == *ro))
+                .map(|(_, n)| n.parties)
+                .sum()
         };
         let role = role.filter(|r| total(Some(r)) >= MIN_PARTIES_ROLE);
         let parties = total(role);
@@ -678,7 +734,14 @@ impl Stats {
             })
             .collect();
         let rang = |r: &str| ROLES.iter().position(|x| *x == r).unwrap_or(ROLES.len());
-        lignes.sort_by(|a, b| rang(a.role).cmp(&rang(b.role)).then(b.score.total_cmp(&a.score)).then(a.champion.cmp(&b.champion)));
+        // Tri : d'abord le rôle (ordre de ROLES), puis le meilleur score, puis l'id
+        // (pour un ordre stable en cas d'égalité).
+        lignes.sort_by(|a, b| {
+            rang(a.role)
+                .cmp(&rang(b.role))
+                .then(b.score.total_cmp(&a.score))
+                .then(a.champion.cmp(&b.champion))
+        });
         TierList { patch: self.patch.clone(), parties: self.parties, lignes }
     }
 }
@@ -724,6 +787,14 @@ pub fn chemin_patch(patch: &str) -> PathBuf {
     dossier().join(format!("stats-{patch}.tsv"))
 }
 
+/// Fichier allégé à publier (GitHub Releases), écrit par la collecte à côté du
+/// fichier cumulatif. Même nom que le fichier téléchargé par l'app.
+pub fn chemin_publication(patch: &str) -> PathBuf {
+    let d = dossier().join("publication");
+    let _ = std::fs::create_dir_all(&d);
+    d.join(format!("stats-{patch}.tsv"))
+}
+
 /// "16.23.1" -> "16.23" (les parties indiquent "16.23.xxx.yyyy").
 pub fn patch_court(version: &str) -> String {
     version.split('.').take(2).collect::<Vec<_>>().join(".")
@@ -731,14 +802,20 @@ pub fn patch_court(version: &str) -> String {
 
 /// Appelle `f` sur chaque ligne du fichier, avec UN seul tampon réutilisé :
 /// la RAM utilisée ne dépend pas de la taille du fichier.
+/// On lit des OCTETS puis on vérifie l'UTF-8 ligne par ligne : un octet abîmé ne
+/// fait sauter que sa ligne, pas tout le fichier.
 fn lire_lignes(chemin: &Path, mut f: impl FnMut(&str)) -> Option<()> {
     let mut lecteur = std::io::BufReader::new(std::fs::File::open(chemin).ok()?);
-    let mut ligne = String::new();
+    let mut octets: Vec<u8> = Vec::new();
     loop {
-        ligne.clear();
-        match lecteur.read_line(&mut ligne) {
+        octets.clear();
+        match lecteur.read_until(b'\n', &mut octets) {
             Ok(0) => return Some(()),
-            Ok(_) => f(ligne.trim_end_matches(['\n', '\r'])),
+            Ok(_) => {
+                if let Ok(ligne) = std::str::from_utf8(&octets) {
+                    f(ligne.trim_end_matches(['\n', '\r']));
+                }
+            }
             Err(_) => return None,
         }
     }
@@ -816,14 +893,53 @@ pub fn mettre_a_jour(patch: &str) {
     if recent {
         return;
     }
-    let url = format!("{URL_STATS}/stats-{patch}.tsv");
-    match crate::http::internet().get(&url).call().ok().and_then(|r| r.into_string().ok()) {
-        Some(texte) if texte.starts_with("#patch") => {
-            let _ = std::fs::write(&chemin, texte);
-            crate::log!("Stats du patch {patch} mises à jour.");
-        }
-        _ => crate::log!("Pas encore de stats publiées pour le patch {patch}."),
+    // Une collecte locale existe (fichier vus-<patch>-...) : on ne l'écrase pas.
+    let prefixe_vus = format!("vus-{patch}-");
+    let collecte_locale = std::fs::read_dir(dossier())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().starts_with(&prefixe_vus));
+    if collecte_locale {
+        return;
     }
+    let url = format!("{URL_STATS}/stats-{patch}.tsv");
+    match telecharger_en_flux(&url, &chemin) {
+        Ok(()) => crate::log!("Stats du patch {patch} mises à jour."),
+        Err(e) => crate::log!("Pas de stats publiées pour le patch {patch} ({e})."),
+    }
+}
+
+/// Taille max acceptée pour le fichier téléchargé (garde-fou).
+const TAILLE_MAX_TELECHARGEMENT: u64 = 64 * 1024 * 1024;
+
+/// Télécharge EN FLUX vers `<cible>.tmp` (quelques Ko de tampon en RAM, quelle
+/// que soit la taille du fichier), vérifie que la 1re ligne est `#patch`, puis
+/// renomme : le fichier en place n'est jamais à moitié écrit.
+fn telecharger_en_flux(url: &str, cible: &Path) -> Result<(), String> {
+    let reponse = crate::http::internet().get(url).call().map_err(|e| e.to_string())?;
+    let tmp = cible.with_extension("tsv.tmp");
+    let resultat = (|| {
+        let mut fichier = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        let mut flux = std::io::Read::take(reponse.into_reader(), TAILLE_MAX_TELECHARGEMENT);
+        std::io::copy(&mut flux, &mut fichier).map_err(|e| e.to_string())?;
+        drop(fichier);
+        if !commence_par_patch(&tmp) {
+            return Err("fichier inattendu".to_string());
+        }
+        std::fs::rename(&tmp, cible).map_err(|e| e.to_string())
+    })();
+    if resultat.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    resultat
+}
+
+/// Le fichier commence-t-il par `#patch` ? (lit seulement 6 octets)
+fn commence_par_patch(chemin: &Path) -> bool {
+    use std::io::Read;
+    let mut debut = [0u8; 6];
+    std::fs::File::open(chemin).and_then(|mut f| f.read_exact(&mut debut)).is_ok() && &debut == b"#patch"
 }
 
 #[cfg(test)]
@@ -889,7 +1005,8 @@ mod tests {
         let mut s = Stats::nouveau("16.23");
         // Électrocution (8112) : 40 parties, 24 victoires. Premier coup (8369 ici en faux) : 4 parties, 4 victoires.
         for i in 0..40 {
-            assert!(s.ajouter_partie(&partie(vec![participant(238, "MIDDLE", i < 24, 8112)]), &sans_objets));
+            let p = partie(vec![participant(238, "MIDDLE", i < 24, 8112)]);
+            assert_eq!(s.ajouter_partie(&p, &sans_objets), Ajout::Comptee);
         }
         for _ in 0..4 {
             s.ajouter_partie(&partie(vec![participant(238, "MIDDLE", true, 9923)]), &sans_objets);
@@ -915,7 +1032,7 @@ mod tests {
         let mut s = Stats::nouveau("16.23");
         let mut vieille = partie(vec![participant(238, "MIDDLE", true, 8112)]);
         vieille["info"]["gameVersion"] = json!("16.22.1.1");
-        assert!(!s.ajouter_partie(&vieille, &sans_objets));
+        assert_eq!(s.ajouter_partie(&vieille, &sans_objets), Ajout::AutrePatch);
         for _ in 0..5 {
             s.ajouter_partie(&partie(vec![participant(238, "TOP", true, 8112)]), &sans_objets);
         }
@@ -1085,5 +1202,49 @@ mod tests {
         assert_eq!(role_depuis_texte("adc"), Some("bottom"));
         assert_eq!(role_depuis_texte("support"), Some("utility"));
         assert_eq!(role_depuis_texte("nimporte"), None);
+    }
+
+    #[test]
+    fn ignore_les_remakes() {
+        let mut s = Stats::nouveau("16.23");
+        let mut remake = partie_mid(true, &[]);
+        remake["info"]["participants"][1]["gameEndedInEarlySurrender"] = json!(true);
+        assert_eq!(s.ajouter_partie(&remake, &sans_objets), Ajout::Ignoree);
+        let mut courte = partie_mid(true, &[]);
+        courte["info"]["gameDuration"] = json!(200);
+        assert_eq!(s.ajouter_partie(&courte, &sans_objets), Ajout::Ignoree);
+        let mut normale = partie_mid(true, &[]);
+        normale["info"]["gameDuration"] = json!(1800);
+        assert_eq!(s.ajouter_partie(&normale, &sans_objets), Ajout::Comptee);
+        assert_eq!(s.nombre_parties_vues(), 1);
+    }
+
+    #[test]
+    fn publication_allegee_et_format() {
+        let mut s = Stats::nouveau("16.23");
+        for _ in 0..2 {
+            s.ajouter_partie(&partie_mid(true, &[]), &sans_objets);
+        }
+        // Vu 2 fois (< 3) : ni page, ni matchup publiés ; totaux et bans gardés.
+        let publie = s.vers_texte_publication();
+        assert!(!publie.contains("\nP\t") && !publie.contains("\nM\t"), "{publie}");
+        assert!(publie.contains("C\t238\tmiddle\t2\t2") && publie.contains("B\t157\t2"));
+        assert!(Stats::depuis_texte(&publie, None).format_actuel());
+        assert!(!Stats::depuis_texte("#patch\t16.23\nS\t238\tmiddle\t4\t14\t40\t24", None).format_actuel());
+    }
+
+    #[test]
+    fn un_octet_abime_ne_fait_sauter_que_sa_ligne() {
+        let chemin = std::env::temp_dir().join(format!("stat-traque-test-utf8-{}.tsv", std::process::id()));
+        let mut octets = b"#patch\t16.23\n#parties\t10\nC\t238\tmiddle\t40\t30\n".to_vec();
+        octets.extend_from_slice(b"C\t103\tmiddle\t\xff\xfe\n");
+        octets.extend_from_slice(b"C\t134\tmiddle\t20\t10\n");
+        std::fs::write(&chemin, octets).unwrap();
+        let s = Stats::charger_tout(&chemin).unwrap();
+        assert_eq!(s.roles_joues(238), vec![("middle", 40)]);
+        assert_eq!(s.roles_joues(134), vec![("middle", 20)]);
+        assert!(s.roles_joues(103).is_empty());
+        assert!(commence_par_patch(&chemin));
+        let _ = std::fs::remove_file(&chemin);
     }
 }

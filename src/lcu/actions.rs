@@ -137,14 +137,22 @@ pub fn fusionner_item_sets(existant: &Value, summoner_id: u64, set: Value, maint
     tout
 }
 
+/// La réponse du GET est-elle sûre à réécrire ? Objet dont `itemSets` est une
+/// liste ou null. Sinon on risquerait d'effacer des sets qu'on n'a pas compris.
+fn reponse_item_sets_valide(v: &Value) -> bool {
+    matches!(v.get("itemSets"), Some(Value::Array(_)) | Some(Value::Null))
+}
+
 /// Applique l'item set dans le client (visible dans la boutique en partie).
 pub fn appliquer_item_set(lcu: &Lcu, summoner_id: u64, set: Value) -> Result<(), String> {
     let chemin = format!("/lol-item-sets/v1/item-sets/{summoner_id}/sets");
     // Sécurité : si la lecture rate, on n'écrit RIEN. Un PUT avec seulement notre
     // set effacerait tous les item sets du joueur.
+    // Même chose si la réponse n'a pas la forme attendue (`itemSets` = liste, ou null
+    // pour un compte sans aucun set).
     let existant = lcu
         .get(&chemin)
-        .filter(Value::is_object)
+        .filter(reponse_item_sets_valide)
         .ok_or_else(|| "item sets du client illisibles, rien modifié".to_string())?;
     let maintenant = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -199,5 +207,15 @@ mod tests {
         let corps = fusionner_item_sets(&json!({"itemSets": null}), 7, json_item_set(1, "Annie", &[]), 5);
         assert_eq!(corps["accountId"], 7);
         assert_eq!(corps["itemSets"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ne_reecrit_que_une_reponse_comprise() {
+        assert!(reponse_item_sets_valide(&json!({"accountId": 1, "itemSets": []})));
+        assert!(reponse_item_sets_valide(&json!({"itemSets": null})));
+        assert!(!reponse_item_sets_valide(&json!({"accountId": 1})));
+        assert!(!reponse_item_sets_valide(&json!({"itemSets": {"0": {}}})));
+        assert!(!reponse_item_sets_valide(&json!({"errorCode": "RPC_ERROR", "httpStatus": 404})));
+        assert!(!reponse_item_sets_valide(&json!([])));
     }
 }

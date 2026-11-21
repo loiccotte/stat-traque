@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use crate::log;
 use crate::riot_api::RiotApi;
-use crate::stats::{self, Stats};
+use crate::stats::{self, Ajout, Stats};
 
 const LIGUES: [&str; 3] = ["challengerleagues", "grandmasterleagues", "masterleagues"];
 const PARTIES_PAR_JOUEUR: u8 = 20;
@@ -32,24 +32,32 @@ pub fn collecter(minutes: u64) {
     };
     if donnees.genres_objets.is_empty() {
         // Cache Data Dragon à l'ancien format et pas d'internet : on ne sait pas
-        // quels objets sont légendaires, ils ne seront pas comptés.
-        log!("Attention : genres des objets inconnus (cache Data Dragon ancien), objets non comptés.");
+        // quels objets sont légendaires. On s'arrête plutôt que de marquer des
+        // parties « vues » sans leurs objets (elles ne seraient jamais recomptées).
+        log!("Collecte impossible : genres des objets inconnus (cache Data Dragon ancien, connecte-toi à internet).");
+        return;
     }
     let patch = stats::patch_court(&donnees.version);
     let chemin = stats::chemin_patch(&patch);
+    let chemin_publication = stats::chemin_publication(&patch);
     let chemin_vus = stats::dossier().join(format!("vus-{patch}-{}.txt", api.plateforme()));
 
     // On reprend là où on s'était arrêté.
-    let mut s = Stats::depuis_texte(&std::fs::read_to_string(&chemin).unwrap_or_default(), None);
-    if s.patch != patch {
-        s = Stats::nouveau(&patch);
-    }
+    let mut s = Stats::charger_tout(&chemin).unwrap_or_default();
     let mut vus: HashSet<String> =
         std::fs::read_to_string(&chemin_vus).unwrap_or_default().lines().map(String::from).collect();
+    // Autre patch, ou fichier d'un ancien format (sans matchups ni objets) : on repart
+    // de zéro, liste des parties vues comprise (sinon elles ne seraient jamais recomptées).
+    if s.patch != patch || !s.format_actuel() {
+        s = Stats::nouveau(&patch);
+        vus.clear();
+    }
     log!("Collecte patch {patch} sur {} pendant {minutes} min ({} parties déjà comptées).", api.plateforme(), s.nombre_parties_vues());
 
     let sauver = |s: &Stats, vus: &HashSet<String>| {
+        // Fichier de collecte : TOUT (pour continuer à cumuler) ; fichier à publier : allégé.
         let _ = std::fs::write(&chemin, s.vers_texte(1));
+        let _ = std::fs::write(&chemin_publication, s.vers_texte_publication());
         let _ = std::fs::write(&chemin_vus, vus.iter().cloned().collect::<Vec<_>>().join("\n"));
     };
     let mut ajoutees = 0u32;
@@ -68,15 +76,19 @@ pub fn collecter(minutes: u64) {
                     continue;
                 }
                 match api.partie_sans_cache(id) {
-                    Ok(p) if s.ajouter_partie(&p, &|id| donnees.genre_objet(id)) => {
-                        ajoutees += 1;
-                        if ajoutees.is_multiple_of(50) {
-                            sauver(&s, &vus);
-                            log!("{ajoutees} parties ajoutées...");
+                    Ok(p) => match s.ajouter_partie(&p, &|id| donnees.genre_objet(id)) {
+                        Ajout::Comptee => {
+                            ajoutees += 1;
+                            if ajoutees.is_multiple_of(50) {
+                                sauver(&s, &vus);
+                                log!("{ajoutees} parties ajoutées...");
+                            }
                         }
-                    }
-                    // Partie d'un ancien patch : les suivantes de ce joueur aussi -> joueur suivant.
-                    Ok(_) => break,
+                        // Remake / reddition précoce : partie suivante.
+                        Ajout::Ignoree => {}
+                        // Partie d'un ancien patch : les suivantes de ce joueur aussi -> joueur suivant.
+                        Ajout::AutrePatch => break,
+                    },
                     Err(e) => log!("Partie {id} : {e}"),
                 }
             }
@@ -84,4 +96,5 @@ pub fn collecter(minutes: u64) {
     }
     sauver(&s, &vus);
     log!("Collecte terminée : {ajoutees} parties ajoutées, {} au total. Fichier : {}", s.nombre_parties_vues(), chemin.display());
+    log!("Fichier à publier (allégé) : {}", chemin_publication.display());
 }

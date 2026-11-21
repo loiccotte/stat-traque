@@ -13,7 +13,8 @@ use super::format;
 use super::onglets::{onglet_conseille, Onglet};
 use super::reglages::{libelle_region, FormReglages, REGIONS};
 use super::theme;
-use crate::affichage::{EtatAffichage, VueChampSelect, VueObjets, VueRunes};
+use super::protocole::Demande;
+use crate::affichage::{EtatAffichage, VueChampSelect, VueCibleFiche, VueObjets, VueRunes};
 use crate::compo::AnalyseEquipe;
 use crate::ddragon::DonneesJeu;
 use crate::gameflow::Phase;
@@ -32,6 +33,10 @@ pub struct Ecran {
     retour_reglages: Option<(bool, String)>,
     /// Rôle choisi dans la tier list (+ lignes déjà filtrées).
     filtre_tier: super::historique::FiltreTier,
+    /// Onglet Fiche : joueur choisi dans la liste.
+    fiche: super::fiche::EtatOnglet,
+    /// « Copié » affiché à côté du bouton utilisé (fiche ou récap).
+    copie: super::fiche::RetourCopie,
 }
 
 impl Ecran {
@@ -42,6 +47,8 @@ impl Ecran {
             form: FormReglages::depuis(&Reglages::charger()),
             retour_reglages: None,
             filtre_tier: super::historique::FiltreTier::default(),
+            fiche: Default::default(),
+            copie: Default::default(),
         }
     }
 
@@ -101,8 +108,15 @@ fn dessiner_onglet(ui: &mut Ui, ecran: &mut Ecran, etat: &EtatAffichage) {
             Some(cs) => dessiner_champ_select(ui, cs, donnees),
             None => vide(ui, "Pas de champ select en cours. Lance une partie : l'analyse s'affichera ici."),
         },
-        Onglet::Partie => dessiner_partie(ui, etat, donnees),
-        Onglet::Historique => super::historique::dessiner(ui, etat, donnees),
+        Onglet::Partie => {
+            // Clic sur « Fiche » à côté d'un joueur : on montre l'onglet Fiche
+            // (avec « Chargement... » le temps que la fiche arrive).
+            if dessiner_partie(ui, etat, donnees) {
+                ecran.onglet = Onglet::Fiche;
+            }
+        }
+        Onglet::Fiche => super::fiche::dessiner(ui, etat, &mut ecran.fiche, &mut ecran.copie, donnees),
+        Onglet::Historique => super::historique::dessiner(ui, etat, donnees, &mut ecran.copie),
         Onglet::TierList => match &etat.tier_list {
             Some(t) => super::historique::dessiner_tier_list(ui, t, &mut ecran.filtre_tier),
             None => vide(ui, "Pas encore de stats pour ce patch (stat-traque collecter 30)."),
@@ -381,14 +395,17 @@ fn stat(ui: &mut Ui, libelle: &str, valeur: &str) {
 
 // ---------------------------------------------------------------- Partie
 
-fn dessiner_partie(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>) {
+/// Onglet Partie. Renvoie true si le joueur a demandé une fiche (bouton « Fiche »).
+fn dessiner_partie(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>) -> bool {
+    let mut demandee = false;
     if etat.rangs.is_empty() && etat.partie.is_none() {
         let texte = if etat.cle_api {
             "Pas de partie en cours. Les rangs des 10 joueurs s'afficheront ici au lancement de la partie."
         } else {
             "Pas de partie en cours. Pour voir les rangs, enregistre ta clé API : stat-traque cle RGAPI-..."
         };
-        return vide(ui, texte);
+        vide(ui, texte);
+        return false;
     }
     if !etat.rangs.is_empty() {
         let (bleus, rouges) = format::par_equipe(&etat.rangs);
@@ -399,7 +416,7 @@ fn dessiner_partie(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJe
             theme::carte().show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.label(RichText::new(titre).color(couleur).strong().size(16.0));
-                tableau_rangs(ui, titre, &joueurs, donnees);
+                demandee |= tableau_rangs(ui, titre, &joueurs, &etat.cibles_fiche, donnees);
             });
             ui.add_space(8.0);
         }
@@ -411,11 +428,14 @@ fn dessiner_partie(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJe
             tableau_live(ui, p, donnees);
         });
     }
+    demandee
 }
 
-fn tableau_rangs(ui: &mut Ui, id: &str, joueurs: &[&InfoJoueur], donnees: Option<&DonneesJeu>) {
-    egui::Grid::new(("rangs", id)).num_columns(8).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-        for entete in ["Champion", "Joueur", "Solo", "Bilan solo", "Flex", "Maîtrise", "Meilleur vu", "Badges"] {
+/// Tableau des rangs d'une équipe. Renvoie true si une fiche a été demandée.
+fn tableau_rangs(ui: &mut Ui, id: &str, joueurs: &[&InfoJoueur], cibles: &[VueCibleFiche], donnees: Option<&DonneesJeu>) -> bool {
+    let mut demandee = false;
+    egui::Grid::new(("rangs", id)).num_columns(9).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+        for entete in ["Champion", "Joueur", "Solo", "Bilan solo", "Flex", "Maîtrise", "Meilleur vu", "Badges", ""] {
             ui.label(RichText::new(entete).color(theme::TEXTE_DOUX).small());
         }
         ui.end_row();
@@ -439,9 +459,29 @@ fn tableau_rangs(ui: &mut Ui, id: &str, joueurs: &[&InfoJoueur], donnees: Option
             ui.label(format::meilleur_vu(j).unwrap_or_default());
             let badges: Vec<String> = j.badges.iter().map(|b| b.to_string()).collect();
             ui.label(RichText::new(badges.join(" · ")).color(theme::TURQUOISE).small());
+            // Bouton « Fiche » : moi (base locale), ou un joueur connu par spectator.
+            // Pas de bouton pour un joueur inconnu (le parent refuserait de toute façon).
+            let demande = if j.moi {
+                Some(Demande::MaFiche)
+            } else {
+                format::cible_du_joueur(cibles, &j.nom, j.champion).map(|c| Demande::Fiche { puuid: c.puuid.clone() })
+            };
+            match demande {
+                Some(d) => {
+                    let aide = if j.moi { "Ta fiche : 0 requête Riot" } else { "Radar, MMR estimé, champions : 11 requêtes au plus" };
+                    if ui.small_button("Fiche").on_hover_text(aide).clicked() {
+                        super::enfant::demander(&d);
+                        demandee = true;
+                    }
+                }
+                None => {
+                    ui.label("");
+                }
+            }
             ui.end_row();
         }
     });
+    demandee
 }
 
 fn tableau_live(ui: &mut Ui, p: &InstantanePartie, donnees: Option<&DonneesJeu>) {

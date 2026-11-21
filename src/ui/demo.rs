@@ -3,7 +3,10 @@
 
 use std::sync::Arc;
 
-use crate::affichage::{EtatAffichage, VueChampSelect, VueMatchup, VueObjet, VueObjets, VueRunes, VueTier, VueTierList};
+use crate::affichage::{
+    EtatAffichage, VueAxeRadar, VueChampSelect, VueChampionFiche, VueCibleFiche, VueFiche, VueMatchup, VueMmr, VueObjet,
+    VueObjets, VueRoleFiche, VueRunes, VueTier, VueTierList,
+};
 use crate::compo;
 use crate::ddragon::{Champion, DonneesJeu};
 use crate::gameflow::Phase;
@@ -129,12 +132,79 @@ pub fn etat(phase: Phase) -> EtatAffichage {
         stats_perso: Some(Arc::new(historique.stats())),
         progression_lp: Some(Arc::new(progression())),
         recap: Some(Recap::calculer(&historique, &historique.parties[0])),
-        // Fiche joueur : vide dans la démo (l'onglet Fiche viendra avec l'interface).
-        fiche: None,
+        // Fiche joueur : la mienne d'abord ; les boutons « Fiche » en demandent d'autres
+        // (le processus principal répond avec `fiche()` en mode démo, voir parent.rs).
+        fiche: Some(Arc::new(fiche(None))),
         fiche_en_cours: false,
-        recap_partage: None,
-        cibles_fiche: Vec::new(),
+        recap_partage: Some(crate::fiche::recap_discord(&Recap::calculer(&historique, &historique.parties[0]), "Zed", None)),
+        cibles_fiche: CHAMPIONS
+            .iter()
+            .enumerate()
+            .map(|(i, c)| VueCibleFiche { puuid: format!("demo-puuid-{i}"), nom: format!("Joueur{} #EUW", i + 1), champion: c.0 })
+            .collect(),
     }
+}
+
+/// Fiche de démonstration : la mienne (`None`) ou celle d'un joueur de la partie.
+/// Valeurs inventées mais variées d'un joueur à l'autre (calculées depuis le champion).
+pub fn fiche(cible: Option<&VueCibleFiche>) -> VueFiche {
+    let graine = cible.map_or(238, |c| c.champion as u32);
+    let varie = |i: u32, base: u32| ((base + graine * (i + 3) * 7) % 70 + 20) as u8;
+    let moi = cible.is_none();
+    let principal = cible.and_then(|c| CHAMPIONS.iter().find(|x| x.0 == c.champion)).map_or("Zed", |x| x.2);
+    let mut v = VueFiche {
+        puuid: cible.map_or("demo-puuid-0".into(), |c| c.puuid.clone()),
+        nom: cible.map_or("Moi".into(), |c| c.nom.clone()),
+        moi,
+        rang: Some(if moi { "Émeraude II 45 LP".into() } else { "Diamant IV 12 LP".into() }),
+        palier_reference: if moi { "Émeraude".into() } else { "Diamant".into() },
+        reference_approximative: !moi,
+        radar: crate::fiche::AXES
+            .iter()
+            .enumerate()
+            .map(|(i, a)| VueAxeRadar {
+                nom: a.nom().into(),
+                // Une case sans donnée chez les autres joueurs (parties sans métriques).
+                score: if !moi && i == 4 { None } else { Some(if moi { [68, 74, 41, 55, 62, 47, 81][i] } else { varie(i as u32, 11) }) },
+            })
+            .collect(),
+        mmr: Some(VueMmr {
+            rang_equivalent: if moi { "~Émeraude I".into() } else { "~Diamant IV".into() },
+            ecart_lp: if moi { 35 } else { -10 },
+            confiance: if moi { "moyenne".into() } else { "faible".into() },
+            raisons: vec!["gains moyens +22 LP, pertes -17 LP".into(), "adversaires moyens : Émeraude I".into()],
+        }),
+        champions: [(principal, 9, 6, 2.8), ("Ahri", 4, 2, 3.1), ("Lee Sin", 3, 1, 1.9), ("Jinx", 2, 2, 4.0), ("Lulu", 2, 1, 2.2), ("Garen", 1, 1, 3.0)]
+            .iter()
+            .enumerate()
+            // Pas deux fois le même champion (si le principal est déjà dans la liste).
+            .filter(|(i, c)| *i == 0 || c.0 != principal)
+            .map(|(_, c)| c)
+            .take(5)
+            .map(|&(champion, parties, victoires, kda)| VueChampionFiche {
+                champion: champion.into(),
+                parties,
+                victoires,
+                winrate: victoires as f32 * 100.0 / parties as f32,
+                part: parties as f32 * 100.0 / 20.0,
+                kda,
+            })
+            .collect(),
+        roles: vec![
+            VueRoleFiche { role: "middle".into(), parties: 14, part: 70.0 },
+            VueRoleFiche { role: "jungle".into(), parties: 4, part: 20.0 },
+            VueRoleFiche { role: "bottom".into(), parties: 2, part: 10.0 },
+        ],
+        etiquettes: if moi { vec!["Agressif".into(), "Farmer".into(), "Main Zed".into()] } else { vec!["Vision".into(), "Constant".into()] },
+        forme: if moi { "VVDVVDVDVV".into() } else { "DDVDVVDDVD".into() },
+        serie: if moi { 2 } else { -1 },
+        parties_analysees: 20,
+        requetes: if moi { 0 } else { 11 },
+        erreur: None,
+        texte_partage: String::new(),
+    };
+    v.texte_partage = crate::fiche::fiche_discord(&v);
+    v
 }
 
 fn duel(champion: &str, winrate: f32, parties: u32) -> VueMatchup {

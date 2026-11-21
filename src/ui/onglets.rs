@@ -15,6 +15,8 @@ use crate::gameflow::Phase;
 pub enum Onglet {
     ChampSelect,
     Partie,
+    /// Fiche joueur (moi ou un joueur de la partie) : radar, MMR estimé...
+    Fiche,
     Historique,
     TierList,
     Journal,
@@ -23,13 +25,21 @@ pub enum Onglet {
 
 impl Onglet {
     /// Ordre d'affichage dans la barre d'onglets.
-    pub const TOUS: [Onglet; 6] =
-        [Onglet::ChampSelect, Onglet::Partie, Onglet::Historique, Onglet::TierList, Onglet::Journal, Onglet::Reglages];
+    pub const TOUS: [Onglet; 7] = [
+        Onglet::ChampSelect,
+        Onglet::Partie,
+        Onglet::Fiche,
+        Onglet::Historique,
+        Onglet::TierList,
+        Onglet::Journal,
+        Onglet::Reglages,
+    ];
 
     pub fn libelle(self) -> &'static str {
         match self {
             Onglet::ChampSelect => "Champ select",
             Onglet::Partie => "Partie",
+            Onglet::Fiche => "Fiche",
             Onglet::Historique => "Historique",
             Onglet::TierList => "Tier list",
             Onglet::Journal => "Journal",

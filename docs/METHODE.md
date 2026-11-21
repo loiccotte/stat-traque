@@ -59,8 +59,8 @@ Les agents sont définis dans `.claude/agents/` ; les règles communes dans `CLA
 | T26 | Fiches matchup OTP : format + import CSV / Google Sheet | dev-donnees | T04 | une fiche Zed importée |  |
 | T27 | Détection de l'adversaire de lane en champ select | dev-lcu | T09 | bon adversaire en draft |  |
 | T28 | Affichage de la fiche en champ select et overlay | dev-ui | T14, T26, T27 | affichée en < 100 ms |  |
-| T29 | Fiche joueur : radar, MMR estimé, spécificités (feature/fiche-joueur) | dev-riot-api | T19, T10 | moi : 0 requête ; autre joueur : ≤ 11 requêtes | 🟡 logique + console faites (`fiche.rs`, `metriques.rs`) ; écran = interface |
-| T30 | Récap partageable (texte Discord) | dev-riot-api | T20 | 1 clic pour copier | 🟡 texte fait (`stat-traque partager`, `recap_partage`) ; bouton « Copier » = interface |
+| T29 | Fiche joueur : radar, MMR estimé, spécificités (feature/fiche-joueur) | dev-riot-api | T19, T10 | moi : 0 requête ; autre joueur : ≤ 11 requêtes | ✅ logique (`fiche.rs`, `metriques.rs`) + onglet Fiche (`ui/fiche.rs`, radar `ui/radar.rs`) ; demandes via le canal retour enfant -> parent |
+| T30 | Récap partageable (texte Discord) | dev-riot-api | T20 | 1 clic pour copier | ✅ texte + boutons « Copier pour Discord » (fiche, récap), presse-papiers Windows natif |
 
 Parallélisable dès le départ après T01 : **T02, T03, T07, T08**.
 
@@ -153,6 +153,11 @@ dans le processus après fermeture et 50,6 Mo avec l'overlay egui.
 | + toutes les features fusionnées | 5,47 Mo | |
 | + serde derive (protocole) + overlay GDI | 5,72 Mo (+0,25 Mo) | |
 | + corrections re-revue (DPI, écriture dédiée...) | 5,73 Mo | < 20 Mo |
+| + fiche joueur (fusion) + onglet Fiche, canal retour, presse-papiers natif | 5,99 Mo | < 20 Mo |
+
+Onglet Fiche (mesuré sous Xvfb, `essai-fenetre`) : processus de l'icône 0,9 Mo privés
+(inchangé), fenêtre 38 Mo privés ; 0 % CPU fenêtre ouverte sans changement, y compris après
+un « Copié » (un seul redessin programmé 2 s plus tard pour l'effacer).
 
 Polices : seules les polices de base d'egui (Ubuntu-Light, Hack, icônes egui) ; les polices
 emoji (`monochrome_emoji_fonts`) ne sont PAS activées. **À confirmer sous Windows** avec le vrai

@@ -139,6 +139,10 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
             }
             Evenement::Historique(maj) => crate::historique::publier(*maj, etat.donnees.as_deref()),
             Evenement::DemandeFiche { puuid } => demander_fiche(&etat, &puuid, &tx),
+            Evenement::DemandeMaFiche => match etat.mon_puuid.clone() {
+                Some(moi) => demander_fiche(&etat, &moi, &tx),
+                None => log!("Ma fiche : compte inconnu (lance le client LoL une fois)."),
+            },
             Evenement::Fiche(f) => crate::fiche::publier(*f, etat.donnees.as_deref()),
             Evenement::Fenetre => suivre_si_utile(&mut etat, &tx),
             Evenement::Quitter => break,

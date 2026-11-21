@@ -1,6 +1,11 @@
 //! Ce que le processus principal envoie au processus de la fenêtre : une ligne
 //! JSON par message, sur l'entrée standard de l'enfant. Fichier PUR (testé).
 //!
+//! Et dans l'autre sens (canal RETOUR) : l'enfant écrit ses DEMANDES (`Demande`),
+//! une ligne JSON chacune, sur sa sortie standard ; le parent les lit dans un
+//! thread et les traduit en événements pour le cerveau (`traduire`). L'enfant
+//! n'est PAS digne de confiance : tout est revérifié ici et dans le cerveau.
+//!
 //! Pourquoi un 2e processus ? Le pilote OpenGL, une fois chargé, reste en mémoire
 //! jusqu'à la fin du processus (10 à 30 Mo). La fenêtre vit donc dans un processus
 //! à part, qui MEURT à la fermeture : la RAM revient vraiment au système.
@@ -9,7 +14,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::affichage::{EtatAffichage, VueFiche, VueTierList};
+use crate::affichage::{EtatAffichage, VueCibleFiche, VueFiche, VueTierList};
+use crate::evenement::Evenement;
 use crate::historique::{ProgressionLp, ResumePartie, StatsPerso};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -139,6 +145,105 @@ pub fn appliquer_message(etat: &mut EtatAffichage, message: Message) -> Option<M
     }
 }
 
+// =====================================================================
+// Canal retour : demandes de la fenêtre (enfant -> parent)
+// =====================================================================
+
+/// Ce que la fenêtre peut DEMANDER au processus principal. Liste fermée : pas de
+/// commande à exécuter, pas de chemin de fichier, seulement ces deux demandes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Demande {
+    /// Fiche d'un joueur de la partie en cours (puuid donné par `cibles_fiche`).
+    Fiche { puuid: String },
+    /// Ma propre fiche (base locale, 0 requête Riot).
+    MaFiche,
+}
+
+/// Longueur maximale d'une ligne de demande lue par le parent (octets). Une vraie
+/// demande fait ~100 octets ; au-delà, la ligne est jetée sans être gardée en RAM.
+pub const LIGNE_DEMANDE_MAX: usize = 512;
+
+/// Un puuid Riot : 78 caractères en pratique, lettres, chiffres, `-` et `_`.
+/// On accepte 1 à 100 caractères de ce jeu-là, rien d'autre.
+fn puuid_valide(p: &str) -> bool {
+    (1..=100).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Côté fenêtre : une demande -> une ligne JSON (sans retour à la ligne).
+pub fn ligne_demande(d: &Demande) -> String {
+    serde_json::to_string(d).unwrap_or_default()
+}
+
+/// Côté parent : une ligne -> une demande. None si la ligne est illisible, trop
+/// longue, ou si le puuid a une forme impossible (ligne ignorée).
+pub fn lire_demande(texte: &str) -> Option<Demande> {
+    let texte = texte.trim();
+    if texte.len() > LIGNE_DEMANDE_MAX {
+        return None;
+    }
+    match serde_json::from_str::<Demande>(texte).ok()? {
+        Demande::Fiche { puuid } if !puuid_valide(&puuid) => None,
+        d => Some(d),
+    }
+}
+
+/// Côté parent : demande -> événement pour le cerveau. Re-vérification : un puuid
+/// qui n'est PAS dans `cibles` (joueurs de ma partie connus par spectator, liste
+/// tenue par le processus principal, jamais par l'enfant) est ignoré. Le cerveau
+/// revérifie encore derrière (`fiche::nom_autorise`).
+pub fn traduire(d: Demande, cibles: &[VueCibleFiche]) -> Option<Evenement> {
+    match d {
+        Demande::MaFiche => Some(Evenement::DemandeMaFiche),
+        Demande::Fiche { puuid } => {
+            cibles.iter().any(|c| c.puuid == puuid).then(|| Evenement::DemandeFiche { puuid: puuid.into() })
+        }
+    }
+}
+
+/// Lit UNE ligne de `entree` sans jamais garder plus de `max` octets en mémoire :
+/// une ligne plus longue est lue jusqu'au bout puis jetée (`Some(None)`, de même
+/// qu'une ligne qui n'est pas de l'UTF-8). Renvoie None à la fin du flux.
+pub fn ligne_bornee(entree: &mut impl std::io::BufRead, max: usize) -> Option<Option<String>> {
+    let mut tampon = Vec::new();
+    let mut trop_longue = false;
+    loop {
+        let morceau = match entree.fill_buf() {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        };
+        if morceau.is_empty() {
+            // Fin du flux : une dernière ligne sans retour à la ligne compte quand même.
+            return (!tampon.is_empty() || trop_longue).then(|| fin_de_ligne(tampon, trop_longue));
+        }
+        // Jusqu'où lire dans ce morceau : le retour à la ligne, ou tout le morceau.
+        let (a_prendre, fin) = match morceau.iter().position(|&b| b == b'\n') {
+            Some(i) => (i, true),
+            None => (morceau.len(), false),
+        };
+        if !trop_longue {
+            if tampon.len() + a_prendre > max {
+                trop_longue = true;
+                tampon = Vec::new(); // on libère tout de suite
+            } else {
+                tampon.extend_from_slice(&morceau[..a_prendre]);
+            }
+        }
+        entree.consume(a_prendre + usize::from(fin));
+        if fin {
+            return Some(fin_de_ligne(tampon, trop_longue));
+        }
+    }
+}
+
+fn fin_de_ligne(tampon: Vec<u8>, trop_longue: bool) -> Option<String> {
+    if trop_longue {
+        None
+    } else {
+        String::from_utf8(tampon).ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +296,60 @@ mod tests {
         let mut e = EtatAffichage::default();
         assert!(matches!(appliquer(&mut e, &ligne(&Message::PremierPlan)), Some(Message::PremierPlan)));
         assert!(appliquer(&mut e, "pas du json").is_none());
+    }
+
+    #[test]
+    fn demandes_aller_retour() {
+        for d in [Demande::MaFiche, Demande::Fiche { puuid: "abc-DEF_123".into() }] {
+            let l = ligne_demande(&d);
+            assert!(!l.contains('\n'));
+            assert_eq!(lire_demande(&l), Some(d.clone()));
+            assert_eq!(lire_demande(&format!("{l}\r")), Some(d), "fin de ligne Windows");
+        }
+    }
+
+    #[test]
+    fn demandes_invalides_ignorees() {
+        for l in [
+            "",
+            "pas du json",
+            r#"{"Fiche":{}}"#,
+            r#"{"Executer":{"commande":"cmd.exe"}}"#,
+            r#"{"Fiche":{"puuid":""}}"#,
+            r#"{"Fiche":{"puuid":"../../secret"}}"#,
+            r#"{"Fiche":{"puuid":"a b"}}"#,
+            r#"{"Fiche":{"puuid":42}}"#,
+            r#""MaFiche" en trop"#,
+        ] {
+            assert_eq!(lire_demande(l), None, "{l}");
+        }
+        let longue = format!(r#"{{"Fiche":{{"puuid":"{}"}}}}"#, "a".repeat(600));
+        assert_eq!(lire_demande(&longue), None);
+    }
+
+    #[test]
+    fn traduction_verifie_les_cibles() {
+        let cibles = vec![VueCibleFiche { puuid: "p1".into(), nom: "Ami#EUW".into(), champion: 103 }];
+        assert!(matches!(traduire(Demande::MaFiche, &[]), Some(Evenement::DemandeMaFiche)));
+        match traduire(Demande::Fiche { puuid: "p1".into() }, &cibles) {
+            Some(Evenement::DemandeFiche { puuid }) => assert_eq!(&*puuid, "p1"),
+            autre => panic!("{autre:?}"),
+        }
+        assert!(traduire(Demande::Fiche { puuid: "inconnu".into() }, &cibles).is_none());
+        assert!(traduire(Demande::Fiche { puuid: "p1".into() }, &[]).is_none());
+    }
+
+    #[test]
+    fn lignes_bornees() {
+        let texte = format!("{}\n{}\ncourte\r\nfin", "x".repeat(10), "y".repeat(50));
+        // Petit tampon : les lignes arrivent en plusieurs morceaux.
+        let mut r = std::io::BufReader::with_capacity(8, texte.as_bytes());
+        assert_eq!(ligne_bornee(&mut r, 20), Some(Some("x".repeat(10))));
+        assert_eq!(ligne_bornee(&mut r, 20), Some(None), "trop longue : jetée");
+        assert_eq!(ligne_bornee(&mut r, 20), Some(Some("courte\r".into())));
+        assert_eq!(ligne_bornee(&mut r, 20), Some(Some("fin".into())));
+        assert_eq!(ligne_bornee(&mut r, 20), None);
+        let mut abime = std::io::BufReader::new(&[0xff, 0xfe, b'\n'][..]);
+        assert_eq!(ligne_bornee(&mut abime, 20), Some(None), "UTF-8 invalide");
     }
 }

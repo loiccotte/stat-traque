@@ -9,6 +9,9 @@
 //!    (Condvar : 0 % CPU). Quand la fenêtre est demandée, il lance l'enfant et lui
 //!    écrit une ligne JSON à chaque changement de l'état d'affichage (voir
 //!    protocole.rs). Fermer l'entrée de l'enfant = lui demander de se fermer.
+//!  - Canal RETOUR : l'enfant écrit ses demandes (« ma fiche », « fiche de ce
+//!    joueur ») en JSON sur sa sortie standard ; un thread « demandes » les lit, les
+//!    REVÉRIFIE et les transmet au cerveau (`lire_demandes`).
 //!  - Si l'enfant plante ou est fermé par la croix, le thread le voit (un petit
 //!    thread attend sa fin) et se rendort. Le processus principal continue.
 //!  - L'overlay en jeu, lui, est une fenêtre Windows native (overlay_natif.rs, dans le
@@ -22,7 +25,9 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Condvar, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::protocole::{ligne, ligne_version, Expediteur, Message};
+use super::protocole::{
+    ligne, ligne_bornee, ligne_version, lire_demande, traduire, Demande, Expediteur, Message, LIGNE_DEMANDE_MAX,
+};
 use crate::affichage;
 use crate::evenement::Evenement;
 use crate::gameflow::Phase;
@@ -266,6 +271,62 @@ fn changement_de_phase(ancienne: Option<Phase>, phase: Option<Phase>) {
     }
 }
 
+/// Deux clics sur le même bouton dans ce délai = une seule demande.
+const ANTI_DOUBLE_CLIC: Duration = Duration::from_millis(1500);
+
+/// Thread « demandes » : lit les lignes que l'enfant écrit sur sa sortie standard.
+///
+/// L'enfant n'est PAS digne de confiance (un autre programme pourrait se faire
+/// passer pour lui) : une ligne invalide est ignorée, un puuid absent des joueurs
+/// de la partie (`cibles_fiche`, tenu par NOTRE état) est ignoré, et le cerveau
+/// revérifie encore (`fiche::nom_autorise`). Aucune commande n'est exécutée :
+/// seules les demandes de `protocole::Demande` existent.
+/// Le journal de l'enfant (`println!`) passe aussi par là : ce n'est pas du JSON
+/// de demande, donc ignoré.
+fn lire_demandes(sortie: std::process::ChildStdout) {
+    let mut lecteur = std::io::BufReader::new(sortie);
+    let mut derniere: Option<(Demande, Instant)> = None;
+    while let Some(ligne) = ligne_bornee(&mut lecteur, LIGNE_DEMANDE_MAX) {
+        let Some(demande) = ligne.as_deref().and_then(lire_demande) else { continue };
+        if derniere.as_ref().is_some_and(|(d, quand)| *d == demande && quand.elapsed() < ANTI_DOUBLE_CLIC) {
+            continue;
+        }
+        derniere = Some((demande.clone(), Instant::now()));
+        match CERVEAU.get() {
+            Some(tx) => {
+                // Vérification sous le verrou de l'état, sans copier la liste.
+                if let Some(ev) = affichage::avec(|e| traduire(demande, &e.cibles_fiche)) {
+                    let _ = tx.lock().unwrap().send(ev);
+                } else {
+                    crate::log!("Demande de fiche ignorée : joueur inconnu.");
+                }
+            }
+            // `essai-fenetre voir` (pas de cerveau) : on répond avec une fiche de démo.
+            None if DEMO.load(Ordering::Relaxed) => repondre_demo(demande),
+            None => {}
+        }
+    }
+}
+
+/// Démonstration : fiche fabriquée (aucune requête), après un court « chargement »
+/// pour voir l'indicateur.
+fn repondre_demo(demande: Demande) {
+    let cible = match &demande {
+        Demande::MaFiche => None,
+        Demande::Fiche { puuid } => match affichage::avec(|e| e.cibles_fiche.iter().find(|c| &c.puuid == puuid).cloned()) {
+            Some(c) => Some(c),
+            None => return, // même règle qu'en vrai : inconnu = ignoré
+        },
+    };
+    affichage::modifier(|e| e.fiche_en_cours = true);
+    std::thread::sleep(Duration::from_millis(600));
+    let fiche = super::demo::fiche(cible.as_ref());
+    affichage::modifier(|e| {
+        e.fiche = Some(std::sync::Arc::new(fiche));
+        e.fiche_en_cours = false;
+    });
+}
+
 /// Le thread « fenetre » : dort, lance l'enfant demandé, le nourrit, se rendort.
 fn boucle() {
     loop {
@@ -305,8 +366,15 @@ fn lancer_enfant(mode: Mode) -> std::io::Result<()> {
     if mode == Mode::Overlay {
         commande.arg("overlay");
     }
-    let mut enfant = commande.stdin(Stdio::piped()).stdout(Stdio::null()).spawn()?;
+    // stdin : l'état, du parent vers l'enfant. stdout : les demandes de l'enfant
+    // (canal retour, voir `lire_demandes`).
+    let mut enfant = commande.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
     let Some(mut entree) = enfant.stdin.take() else { return Ok(()) };
+    if let Some(sortie) = enfant.stdout.take() {
+        // Thread « demandes » : dort sur la lecture (0 % CPU), meurt avec l'enfant
+        // (fin du flux quand le processus se termine).
+        std::thread::Builder::new().name("demandes".into()).spawn(move || lire_demandes(sortie))?;
+    }
     let pid = enfant.id();
     // « Ouvrir » déjà pris en compte par ce lancement.
     let mut ouvertures_traitees = 0;

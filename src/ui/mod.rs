@@ -10,11 +10,13 @@
 //!   - l'overlay en jeu est une petite fenêtre Windows native (GDI), sans OpenGL.
 //!
 //!   parent.rs        côté principal : lance / nourrit / ferme l'enfant, phases, overlay
-//!   protocole.rs     messages JSON principal -> enfant (pur, testé)
+//!   protocole.rs     messages JSON principal -> enfant, et demandes enfant -> principal (pur, testé)
 //!   enfant.rs        côté enfant : la fenêtre egui (`stat-traque --fenetre`)
 //!   overlay_natif.rs overlay Windows natif (GDI), dans le thread de l'icône
 //!   ecrans.rs        dessin des onglets de la fenêtre principale
 //!   historique.rs    onglets Historique (parties, stats, LP, récap) et Tier list
+//!   fiche.rs         onglet Fiche (radar, MMR estimé...) et boutons « Copier pour Discord »
+//!   radar.rs         géométrie du radar de la fiche (pur, testé)
 //!   overlay.rs       overlay egui (Linux / développement seulement)
 //!   theme.rs         couleurs (bleu nuit / or)
 //!   onglets.rs       liste des onglets (pur, testé)
@@ -32,12 +34,15 @@ pub mod demo;
 pub mod format;
 pub mod onglets;
 pub mod protocole;
+pub mod radar;
 pub mod reglages;
 
 #[cfg(any(windows, target_os = "linux"))]
 mod ecrans;
 #[cfg(any(windows, target_os = "linux"))]
 mod enfant;
+#[cfg(any(windows, target_os = "linux"))]
+mod fiche;
 #[cfg(any(windows, target_os = "linux"))]
 mod historique;
 #[cfg(any(windows, target_os = "linux"))]

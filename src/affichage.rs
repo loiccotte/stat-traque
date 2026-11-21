@@ -61,6 +61,9 @@ pub struct EtatAffichage {
     pub rangs: Vec<InfoJoueur>,
     pub partie: Option<InstantanePartie>,
     pub messages: Vec<String>,
+    /// Données du patch (noms des champions, objets...) : partagées, pas copiées
+    /// (`Arc` = pointeur partagé, le cloner ne copie que le pointeur).
+    pub donnees: Option<std::sync::Arc<crate::ddragon::DonneesJeu>>,
 }
 
 static ETAT: Mutex<Option<EtatAffichage>> = Mutex::new(None);
@@ -100,4 +103,10 @@ pub fn message(texte: String) {
             e.messages.remove(0);
         }
     });
+}
+
+/// Phase actuelle seulement (sans copier tout l'état) : l'interface s'en sert à
+/// chaque changement pour ouvrir la fenêtre au champ select, gérer l'overlay...
+pub fn phase() -> Option<Phase> {
+    ETAT.lock().unwrap().as_ref().and_then(|e| e.phase)
 }

@@ -28,7 +28,25 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse", # RegisterHotKey : raccourci de l'overlay
+    "Win32_System_ProcessStatus",      # RAM du processus (commande `essai-fenetre`)
 ] }
+# Fenêtre et overlay : egui (interface "immédiate" : on redessine tout à chaque image)
+# via eframe, rendu OpenGL (`glow`). Toutes les options par défaut sont coupées :
+# pas de wgpu (lourd), pas de x11/wayland (Linux), pas de presse-papiers, de liens
+# ni de lecteur d'écran. Seulement : glow + police par défaut d'egui.
+# Coût mesuré (exe Windows release) : voir docs/METHODE.md, section « Mesures T07 ».
+# RAM : la fenêtre (et son contexte OpenGL) n'existe que quand elle est ouverte.
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
+# Déjà tiré par eframe (même version, aucun coût en plus) : on l'utilise directement
+# pour `with_any_thread` (la fenêtre tourne hors du thread principal, pris par l'icône).
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+
+# Linux = développement seulement : la même fenêtre, via X11, pour compiler/tester
+# l'interface et mesurer sa RAM (Xvfb). Rien de tout ça n'entre dans l'exe Windows.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11"] }
 
 # Pour un .exe le plus petit et rapide possible quand on compile en "release".
 [profile.release]

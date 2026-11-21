@@ -54,6 +54,9 @@ impl RetourCopie {
 pub struct EtatOnglet {
     /// Joueur choisi dans la liste (puuid).
     cible: Option<String>,
+    /// puuid de la dernière fiche affichée : quand une nouvelle fiche arrive, la
+    /// liste se place sur ce joueur.
+    fiche_vue: String,
 }
 
 /// L'onglet entier.
@@ -83,6 +86,12 @@ fn barre_demandes(ui: &mut Ui, etat: &EtatAffichage, onglet: &mut EtatOnglet, do
         if !etat.cibles_fiche.is_empty() {
             ui.add_space(12.0);
             ui.label(RichText::new("Joueur de la partie :").color(theme::TEXTE_DOUX));
+            if let Some(f) = etat.fiche.as_deref().filter(|f| f.puuid != onglet.fiche_vue) {
+                onglet.fiche_vue = f.puuid.clone();
+                if !f.moi {
+                    onglet.cible = Some(f.puuid.clone());
+                }
+            }
             // La cible choisie doit toujours être un joueur de la liste actuelle.
             if !onglet.cible.as_ref().is_some_and(|p| etat.cibles_fiche.iter().any(|c| &c.puuid == p)) {
                 onglet.cible = etat.cibles_fiche.first().map(|c| c.puuid.clone());
@@ -222,9 +231,10 @@ fn dessiner_radar(ui: &mut Ui, f: &VueFiche) {
         p.line_segment([pos(c), pos(radar::sommet(c, rayon, i, n))], trait_toile);
     }
     for g in radar::GRADUATIONS {
-        // Valeur de la graduation, le long de l'axe du haut.
-        let q = radar::point(c, rayon, 0, n, g as f32 / 100.0);
-        p.text(pos([q[0] + 3.0, q[1]]), Align2::LEFT_CENTER, g.to_string(), FontId::proportional(9.0), theme::TEXTE_DOUX.gamma_multiply(0.7));
+        // Valeur de la graduation, ENTRE les axes 0 et 1 (sur un axe, elle cacherait
+        // la valeur du sommet) : l'angle « 1 sur 2n » tombe pile au milieu.
+        let q = radar::point(c, rayon, 1, 2 * n, g as f32 / 100.0);
+        p.text(pos(q), Align2::CENTER_CENTER, g.to_string(), FontId::proportional(9.0), theme::TEXTE_DOUX.gamma_multiply(0.7));
     }
 
     // Polygone des scores : rempli en « éventail » depuis le centre (marche même si

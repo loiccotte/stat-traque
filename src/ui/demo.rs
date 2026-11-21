@@ -174,8 +174,13 @@ pub fn fiche(cible: Option<&VueCibleFiche>) -> VueFiche {
             confiance: if moi { "moyenne".into() } else { "faible".into() },
             raisons: vec!["gains moyens +22 LP, pertes -17 LP".into(), "adversaires moyens : Émeraude I".into()],
         }),
-        champions: [(principal, 9, 6, 2.8), ("Ahri", 4, 2, 3.1), ("Lee Sin", 3, 1, 1.9), ("Jinx", 2, 2, 4.0), ("Lulu", 2, 1, 2.2)]
+        champions: [(principal, 9, 6, 2.8), ("Ahri", 4, 2, 3.1), ("Lee Sin", 3, 1, 1.9), ("Jinx", 2, 2, 4.0), ("Lulu", 2, 1, 2.2), ("Garen", 1, 1, 3.0)]
             .iter()
+            .enumerate()
+            // Pas deux fois le même champion (si le principal est déjà dans la liste).
+            .filter(|(i, c)| *i == 0 || c.0 != principal)
+            .map(|(_, c)| c)
+            .take(5)
             .map(|&(champion, parties, victoires, kda)| VueChampionFiche {
                 champion: champion.into(),
                 parties,

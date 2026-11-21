@@ -143,6 +143,7 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     if p == Phase::ChampSelect {
         etat.cs = SuiviChampSelect::default();
         etat.partie_scoutee = false;
+        crate::rangs::oublier_partie();
         affichage::modifier(|e| {
             e.champ_select = Some(VueChampSelect::default());
             e.rangs.clear();
@@ -151,7 +152,9 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     }
     affichage::modifier(|e| e.phase = Some(p));
     // Fin de partie : on récupère la partie chez Riot (historique + récap + LP).
-    if p == Phase::EndOfGame {
+    // Seulement si spectator a trouvé une partie officielle : une partie personnalisée
+    // ou l'outil d'entraînement n'apparaîtront jamais dans match-v5 (requêtes inutiles).
+    if p == Phase::EndOfGame && crate::rangs::file_partie().is_some() {
         if let (Some(api), Some(puuid)) = (&etat.api, &etat.mon_puuid) {
             crate::historique::lancer_synchro(api.clone(), puuid.clone(), true, tx.clone());
         }

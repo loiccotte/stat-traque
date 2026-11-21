@@ -30,14 +30,14 @@ Priorité : P0 indispensable · P1 important · P2 bonus
 | F15 | Badges : main, 1re partie sur le champ, série V/D | ✅ | P1 | calculés en local (série de défaites : seulement pour toi, base locale) | T16 |
 | F16 | Items et niveaux en direct | 🔜 | P1 | API locale 2999 seulement en partie | T17 |
 | F17 | Overlay click-through, ouvert/fermé par raccourci | 🔜 | P1 | fenêtre transparente, aucune injection | T18 |
-| F18 | Détection des duos (premades) | ✅ | P2 | 1 requête par joueur (ids des 20 dernières parties en commun) | T16 |
+| F18 | Détection des duos (premades) | ✅ | P2 | 1 requête par joueur : ≥ 3 parties communes dont la dernière de l’un, ou ≥ 3 parmi les 5 dernières | T16 |
 
 ## 3. Après la partie
 | ID | Feature | Statut | Prio | Mieux que Blitz | Tâche |
 |---|---|---|---|---|---|
 | F19 | Récap : KDA, CS/min, dégâts, vision, or, LP +/- | ✅ | P0 | — | T20 |
 | F20 | Comparaison à **ta** moyenne sur ce champion | ✅ | P1 | plus parlant qu'une moyenne de rang | T20 |
-| F21 | Historique des parties avec filtres | ✅ | P0 | base locale TSV (~100 octets / partie), hors ligne ; filtres = interface | T22 |
+| F21 | Historique des parties avec filtres | ✅ | P0 | base locale TSV (~100 octets / partie), hors ligne ; 100 dernières parties au 1er lancement (pas de pagination) ; filtres = interface | T22 |
 | F22 | Stats perso par champion / rôle / patch | ✅ | P1 | — | T21 |
 | F23 | Suivi des LP et de la progression | ✅ | P1 | LP par partie, changements de division gérés | T21 |
 | F24 | Récap partageable (texte / image) pour les amis | 💡 | P2 | — | T22 |

@@ -17,8 +17,9 @@
 //!  - « en série de défaites » : seulement pour MOI (base locale, 0 requête). Pour les
 //!    autres il faudrait télécharger leurs dernières parties (~30 requêtes de plus) : non.
 //!  - « groupe N » (duos / premades) : 1 requête de plus par joueur (ids de ses 20
-//!    dernières parties) ; deux joueurs de la même équipe qui ont au moins 2 parties
-//!    récentes en commun jouent sans doute ensemble.
+//!    dernières parties). Les ids ne disent pas si deux joueurs étaient dans la même
+//!    équipe ou l'un CONTRE l'autre (fréquent en Master+ ou sur un petit serveur) : on
+//!    exige donc des indices forts, voir `ensemble`.
 //!
 //! Coût d'une partie : 10 x (rang + maîtrise + ids) + 1 (spectator) = 31 requêtes,
 //! toutes en cache (10 min pour les rangs, 6 h maîtrise, 2 min ids) : relancer l'app
@@ -26,6 +27,7 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -112,8 +114,10 @@ pub struct InfoJoueur {
 
 /// Points de maîtrise à partir desquels on considère le joueur comme un « main ».
 const POINTS_MAIN: u32 = 100_000;
-/// Parties récentes en commun (même équipe) à partir desquelles on parle de groupe.
-const PARTIES_COMMUNES_GROUPE: usize = 2;
+/// Parties en commun à partir desquelles on parle de groupe (voir `ensemble`).
+const PARTIES_COMMUNES_GROUPE: usize = 3;
+/// « Parties les plus récentes » regardées pour le 2e critère de `ensemble`.
+const PARTIES_RECENTES_GROUPE: usize = 5;
 /// Parties récentes regardées pour détecter les groupes.
 const PARTIES_GROUPE: u8 = 20;
 /// Victoires / défaites d'affilée (dans MA base locale) pour les badges de série.
@@ -171,10 +175,24 @@ fn badges_de(j: &InfoJoueur, serie_perso: i32) -> Vec<Badge> {
     b
 }
 
+/// Deux joueurs (de la même équipe dans la partie en cours) jouent-ils ensemble ?
+/// `a` et `b` : ids de leurs dernières parties, plus récentes d'abord.
+/// Se croiser en adversaires arrive, mais rarement plusieurs fois de suite. On exige :
+///  - au moins 3 parties en commun DONT la plus récente de l'un des deux (des amis
+///    enchaînent les parties ensemble) ;
+///  - OU au moins 3 parties en commun parmi leurs 5 dernières.
+fn ensemble(a: &[String], b: &[String]) -> bool {
+    let communes = a.iter().filter(|id| b.contains(id)).count();
+    let derniere_commune = a.first().is_some_and(|id| b.contains(id)) || b.first().is_some_and(|id| a.contains(id));
+    let (ra, rb) = (&a[..a.len().min(PARTIES_RECENTES_GROUPE)], &b[..b.len().min(PARTIES_RECENTES_GROUPE)]);
+    let recentes = ra.iter().filter(|id| rb.contains(id)).count();
+    (communes >= PARTIES_COMMUNES_GROUPE && derniere_commune) || recentes >= PARTIES_COMMUNES_GROUPE
+}
+
 /// Groupes (duos, premades) : pour chaque joueur, son numéro de groupe ou None.
 /// `joueurs[i]` = (équipe bleue ?, ids de ses dernières parties).
-/// Deux joueurs de la MÊME équipe avec au moins `PARTIES_COMMUNES_GROUPE` parties en
-/// commun sont reliés ; un groupe = des joueurs reliés entre eux (même indirectement).
+/// Deux joueurs de la MÊME équipe qui jouent `ensemble` sont reliés ; un groupe =
+/// des joueurs reliés entre eux (même indirectement).
 fn groupes(joueurs: &[(bool, &[String])]) -> Vec<Option<u8>> {
     // `chef[i]` : un représentant du groupe de i (méthode « union-find » simplifiée).
     let mut chef: Vec<usize> = (0..joueurs.len()).collect();
@@ -191,8 +209,7 @@ fn groupes(joueurs: &[(bool, &[String])]) -> Vec<Option<u8>> {
             if bleu_i != bleu_j {
                 continue;
             }
-            let communes = ids_i.iter().filter(|id| ids_j.contains(id)).count();
-            if communes >= PARTIES_COMMUNES_GROUPE {
+            if ensemble(ids_i, ids_j) {
                 let (a, b) = (racine(&chef, i), racine(&chef, j));
                 chef[b] = a;
             }
@@ -275,9 +292,35 @@ fn meilleur_rang(puuid: &str, actuel: Option<&Rang>) -> Option<Rang> {
     table.get(puuid).cloned()
 }
 
+// ---------- File de la partie en cours ----------
+// Notée par `scouter_partie` (spectator-v5) ; 0 = pas de partie officielle connue
+// (entraînement, personnalisée, ou spectator indisponible). Le cerveau s'en sert pour
+// ne pas lancer de synchro d'historique après une partie qui n'y figurera jamais.
+
+static FILE_PARTIE: AtomicU16 = AtomicU16::new(0);
+
+/// File (queueId) de la dernière partie trouvée par spectator, None si aucune.
+pub fn file_partie() -> Option<u16> {
+    Some(FILE_PARTIE.load(Ordering::SeqCst)).filter(|f| *f != 0)
+}
+
+/// Nouvelle partie qui commence (champ select) : on oublie la précédente.
+pub fn oublier_partie() {
+    FILE_PARTIE.store(0, Ordering::SeqCst);
+}
+
+/// File d'une partie spectator-v5 ; None pour une personnalisée.
+fn file_spectator(partie: &Value) -> Option<u16> {
+    if partie["gameType"] == "CUSTOM_GAME" {
+        return None;
+    }
+    partie["gameQueueConfigId"].as_u64().map(|f| f as u16).filter(|f| *f != 0)
+}
+
 /// Infos d'un joueur : rangs + maîtrise (2 requêtes, en cache ensuite).
 /// `avec_parties` : + les ids de ses dernières parties (1 requête), pour les groupes.
-fn infos(api: &RiotApi, joueur: &Joueur, avec_parties: bool) -> (InfoJoueur, Vec<String>) {
+/// `file` : file de la partie en cours si connue (pour MA série locale).
+fn infos(api: &RiotApi, joueur: &Joueur, avec_parties: bool, file: Option<u16>) -> (InfoJoueur, Vec<String>) {
     let (puuid, nom, champion, bleu, moi) = joueur;
     let (champion, bleu, moi) = (*champion, *bleu, *moi);
     let (solo, flex) = api.rangs(puuid).map(|v| lire_rangs(&v)).unwrap_or((None, None));
@@ -306,8 +349,9 @@ fn infos(api: &RiotApi, joueur: &Joueur, avec_parties: bool) -> (InfoJoueur, Vec
         maitrise,
         badges: Vec::new(),
     };
-    // Ma propre série vient de la base locale (0 requête).
-    let serie = if moi { crate::historique::serie_locale(puuid) } else { 0 };
+    // Ma propre série vient de la base locale (0 requête), dans la file de la partie
+    // (ou en classée si on ne la connaît pas).
+    let serie = if moi { crate::historique::serie_locale(puuid, file) } else { 0 };
     j.badges = badges_de(&j, serie);
     let ids = if avec_parties {
         api.ids_parties(puuid, PARTIES_GROUPE)
@@ -325,9 +369,14 @@ type Joueur = (String, String, u16, bool, bool);
 /// Récupère les infos de plusieurs joueurs EN PARALLÈLE (le limiteur global
 /// garantit qu'on ne dépasse pas les limites de la clé).
 /// `joueurs` : (puuid, nom, champion, bleu, moi)
-fn infos_paralleles(api: &RiotApi, joueurs: &[Joueur], avec_parties: bool) -> Vec<(InfoJoueur, Vec<String>)> {
+fn infos_paralleles(
+    api: &RiotApi,
+    joueurs: &[Joueur],
+    avec_parties: bool,
+    file: Option<u16>,
+) -> Vec<(InfoJoueur, Vec<String>)> {
     std::thread::scope(|s| {
-        let fils: Vec<_> = joueurs.iter().map(|j| s.spawn(move || infos(api, j, avec_parties))).collect();
+        let fils: Vec<_> = joueurs.iter().map(|j| s.spawn(move || infos(api, j, avec_parties, file))).collect();
         fils.into_iter().filter_map(|f| f.join().ok()).collect()
     })
 }
@@ -336,6 +385,7 @@ fn infos_paralleles(api: &RiotApi, joueurs: &[Joueur], avec_parties: bool) -> Ve
 pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, tx: Sender<Evenement>) {
     std::thread::spawn(move || {
         let avant = crate::riot_api::Compteurs::maintenant();
+        oublier_partie();
         let partie = match api.partie_en_cours(&mon_puuid) {
             Ok(p) => p,
             Err(ErreurApi::Introuvable) => return, // partie personnalisée / entraînement
@@ -355,7 +405,9 @@ pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, tx: Sender<Evenement
                 Some((puuid, nom, p["championId"].as_u64().unwrap_or(0) as u16, p["teamId"] == 100, moi))
             })
             .collect();
-        let resultats = infos_paralleles(&api, &joueurs, true);
+        let file = file_spectator(&partie);
+        FILE_PARTIE.store(file.unwrap_or(0), Ordering::SeqCst);
+        let resultats = infos_paralleles(&api, &joueurs, true, file);
         // Groupes (duos / premades) à partir des parties récentes en commun.
         let entrees: Vec<(bool, &[String])> = resultats.iter().map(|(j, ids)| (j.bleu, ids.as_slice())).collect();
         let numeros = groupes(&entrees);
@@ -378,7 +430,7 @@ pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, tx: Sender<Evenement
 pub fn scouter_allies(api: Arc<RiotApi>, allies: Vec<(String, u16, bool)>, tx: Sender<Evenement>) {
     std::thread::spawn(move || {
         let joueurs: Vec<_> = allies.into_iter().map(|(p, c, moi)| (p, String::from("allié"), c, true, moi)).collect();
-        let infos = infos_paralleles(&api, &joueurs, false).into_iter().map(|(j, _)| j).collect();
+        let infos = infos_paralleles(&api, &joueurs, false, None).into_iter().map(|(j, _)| j).collect();
         let _ = tx.send(Evenement::Rangs(infos));
     });
 }
@@ -433,15 +485,41 @@ mod tests {
     #[test]
     fn detecte_les_groupes_de_la_meme_equipe() {
         let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let a = ids(&["m1", "m2", "m3"]);
-        let b = ids(&["m2", "m3", "m9"]); // 2 parties avec A : duo
+        let a = ids(&["m1", "m2", "m3", "m4"]);
+        let b = ids(&["m1", "m2", "m3", "m9"]); // 3 parties avec A dont la dernière : duo
         let c = ids(&["m3", "m7"]); // 1 seule en commun : pas assez
-        let d = ids(&["m2", "m3"]); // équipe adverse : ignoré
-        let e = ids(&["x1", "x2"]);
-        let f = ids(&["x1", "x2", "x3"]);
+        let d = ids(&["m1", "m2", "m3"]); // équipe adverse : ignoré
+        let e = ids(&["x1", "x2", "x3", "x4"]);
+        let f = ids(&["y1", "x1", "x2", "x3"]); // 3 parmi les 5 dernières : groupe
         let entrees: Vec<(bool, &[String])> =
             vec![(true, &a), (true, &b), (true, &c), (false, &d), (false, &e), (false, &f)];
         assert_eq!(groupes(&entrees), vec![Some(1), Some(1), None, None, Some(2), Some(2)]);
         assert_eq!(groupes(&[]), Vec::<Option<u8>>::new());
+    }
+
+    #[test]
+    fn deux_adversaires_qui_se_croisent_ne_sont_pas_un_duo() {
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Deux joueurs Master du même petit serveur : 2 parties en commun, puis 3
+        // parties communes étalées, jamais la plus récente, pas 3 dans les 5 dernières.
+        let a = ids(&["a1", "c1", "a2", "a3", "a4", "a5", "c2"]);
+        let b = ids(&["b1", "b2", "c1", "b3", "b4", "c2", "b5"]);
+        assert!(!ensemble(&a, &b));
+        let a2 = ids(&["a1", "a2", "c1", "a3", "a4", "a5", "c2", "c3"]);
+        let b2 = ids(&["b1", "c1", "b2", "b3", "b4", "b5", "c2", "c3"]);
+        assert!(!ensemble(&a2, &b2));
+        let entrees: Vec<(bool, &[String])> = vec![(true, &a2), (true, &b2)];
+        assert_eq!(groupes(&entrees), vec![None, None]);
+        // Mêmes parties, mais la dernière de A est commune : ils enchaînent ensemble.
+        let a3 = ids(&["c1", "a2", "a3", "c2", "c3"]);
+        assert!(ensemble(&a3, &b2));
+    }
+
+    #[test]
+    fn file_de_la_partie_spectator() {
+        let v = |t: &str| serde_json::from_str::<Value>(t).unwrap();
+        assert_eq!(file_spectator(&v(r#"{"gameType":"MATCHED","gameQueueConfigId":420}"#)), Some(420));
+        assert_eq!(file_spectator(&v(r#"{"gameType":"CUSTOM_GAME","gameQueueConfigId":0}"#)), None);
+        assert_eq!(file_spectator(&v(r#"{"gameType":"MATCHED"}"#)), None);
     }
 }

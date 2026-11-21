@@ -11,20 +11,27 @@
 //!  - après chaque partie (phase EndOfGame), avec récap comparé à MA moyenne.
 //!
 //! On ne télécharge QUE les parties nouvelles (`startTime` = date de la dernière
-//! partie connue), 100 au plus la première fois. Coût d'une synchro :
+//! partie connue), 100 au plus par synchro. Coût d'une synchro :
 //!   1 requête (liste des ids) + 1 par partie nouvelle + 1 (rang league-v4).
 //! Après une partie : 3 requêtes. Premier lancement : jusqu'à 102 requêtes, étalées
 //! (une partie toutes les 2,5 s, soit ~48 requêtes / 2 min) pour laisser à la recherche
 //! des rangs en partie (~31 requêtes) sa place dans la limite de 100 requêtes / 2 min.
-
-// Une partie des champs n'est lue que par l'interface (feature/interface).
-#![allow(dead_code)]
+//!
+//! LIMITE CONNUE (pas de pagination) : une synchro ne lit qu'UNE page de match-v5,
+//! soit les 100 parties les plus récentes. Au premier lancement, les parties plus
+//! anciennes ne sont donc jamais récupérées ; et si plus de 100 parties ont été jouées
+//! sans lancer l'app, les plus anciennes de ce lot manquent (trou définitif, car la
+//! synchro suivante repart de la plus récente). Choix volontaire : remonter plus loin
+//! coûterait 1 requête par partie, au débit de la clé dev (~45 parties / min).
+//!
+//! Familles de files : les moyennes ne mélangent pas la Faille, l'ARAM et l'Arena
+//! (un CS/min d'ARAM n'a rien à voir avec un CS/min de Faille). Voir `famille`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -34,7 +41,8 @@ use crate::rangs::Rang;
 use crate::riot_api::{Compteurs, ErreurApi, RiotApi};
 use crate::{affichage, log};
 
-/// Au tout premier lancement, on ne remonte pas plus loin que ces parties.
+/// Parties lues au plus par synchro (1 page match-v5, maximum autorisé par Riot) :
+/// au premier lancement, on ne remonte pas plus loin (voir LIMITE CONNUE en tête).
 const PREMIERE_SYNCHRO: u8 = 100;
 /// Pause entre deux parties téléchargées (voir l'en-tête : partage du débit de la clé).
 const PAUSE_ENTRE_PARTIES: Duration = Duration::from_millis(2500);
@@ -42,7 +50,8 @@ const PAUSE_ENTRE_PARTIES: Duration = Duration::from_millis(2500);
 const PARTIES_AFFICHEES: usize = 20;
 /// En dessous, « ta moyenne » ne veut pas dire grand-chose : on ne compare pas.
 const MIN_PARTIES_MOYENNE: u32 = 3;
-/// Partie de moins de 5 min terminée par un vote : remake, ignorée dans les stats.
+/// Points de LP gardés pour le graphique, par file.
+const POINTS_PAR_FILE: usize = 30;
 const ENTETE_PARTIES: &str = "#stat-traque historique v1";
 const ENTETE_LP: &str = "#stat-traque lp v1";
 
@@ -67,6 +76,39 @@ pub fn nom_file(file: u16) -> &'static str {
     }
 }
 
+/// Famille de jeu : on ne compare que des parties de la même famille.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Famille {
+    /// Faille de l'invocateur : normales, classées, partie rapide, Clash.
+    Faille,
+    /// ARAM (et Clash ARAM).
+    Aram,
+    Arena,
+    /// URF, modes temporaires, personnalisées...
+    Autre,
+}
+
+impl Famille {
+    pub fn libelle(self) -> &'static str {
+        match self {
+            Famille::Faille => "Faille de l'invocateur",
+            Famille::Aram => "ARAM",
+            Famille::Arena => "Arena",
+            Famille::Autre => "Autres modes",
+        }
+    }
+}
+
+/// Famille d'une file (queueId).
+pub fn famille(file: u16) -> Famille {
+    match file {
+        400 | 420 | 430 | 440 | 490 | 700 => Famille::Faille,
+        450 | 720 => Famille::Aram,
+        1700 | 1710 => Famille::Arena,
+        _ => Famille::Autre,
+    }
+}
+
 // =====================================================================
 // 1. Résumé d'une partie
 // =====================================================================
@@ -84,7 +126,8 @@ pub struct ResumePartie {
     /// "top", "jungle", "middle", "bottom", "utility" ; None en ARAM / Arena.
     pub role: Option<&'static str>,
     pub victoire: bool,
-    /// Partie annulée (remake) : comptée nulle part.
+    /// Remake : partie de moins de 5 min arrêtée par un vote (`gameEndedInEarlySurrender`).
+    /// Ignorée dans les stats, les moyennes, les séries et les LP.
     pub remake: bool,
     pub kills: u16,
     pub morts: u16,
@@ -134,6 +177,10 @@ impl ResumePartie {
             patch: crate::stats::patch_court(info["gameVersion"].as_str().unwrap_or("")).into(),
             lp: None,
         })
+    }
+
+    pub fn famille(&self) -> Famille {
+        famille(self.file)
     }
 
     pub fn minutes(&self) -> f32 {
@@ -318,13 +365,16 @@ impl StatsGroupe {
     }
 }
 
-/// Mes stats, rangées par champion, rôle, patch et file (les plus jouées d'abord).
+/// Mes stats (les plus jouées d'abord). `total`, `par_champion`, `par_role` et
+/// `par_patch` ne comptent QUE la Faille de l'invocateur ; l'ARAM, l'Arena et les
+/// autres modes ont leur ligne dans `par_famille` (et `par_file`).
 #[derive(Debug, Clone, Default)]
 pub struct StatsPerso {
     pub total: StatsGroupe,
     pub par_champion: Vec<(u16, StatsGroupe)>,
     pub par_role: Vec<(&'static str, StatsGroupe)>,
     pub par_patch: Vec<(Box<str>, StatsGroupe)>,
+    pub par_famille: Vec<(Famille, StatsGroupe)>,
     pub par_file: Vec<(u16, StatsGroupe)>,
 }
 
@@ -385,16 +435,20 @@ impl LigneRecap {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Recap {
     pub partie: ResumePartie,
-    /// Nombre de mes AUTRES parties sur ce champion (base de la moyenne).
+    /// Nombre de mes AUTRES parties sur ce champion, même famille (base de la moyenne).
     pub parties_champion: u32,
     pub lignes: Vec<LigneRecap>,
 }
 
 impl Recap {
-    /// Compare `partie` à mes autres parties sur le même champion (remakes exclus).
+    /// Compare `partie` à mes autres parties sur le même champion ET la même famille
+    /// de file (une ARAM n'est pas comparée à la Faille), remakes exclus.
     pub fn calculer(h: &Historique, partie: &ResumePartie) -> Self {
         let mut moy = StatsGroupe::default();
-        for p in h.parties.iter().filter(|p| p.champion == partie.champion && p.id != partie.id && !p.remake) {
+        let comparable = |p: &&ResumePartie| {
+            p.champion == partie.champion && p.famille() == partie.famille() && p.id != partie.id && !p.remake
+        };
+        for p in h.parties.iter().filter(comparable) {
             moy.ajouter(p);
         }
         let assez = moy.parties >= MIN_PARTIES_MOYENNE;
@@ -448,7 +502,7 @@ pub struct ProgressionLp {
     /// LP gagnés (+) / perdus (-) sur les 7 derniers jours.
     pub solo_7_jours: Option<i32>,
     pub flex_7_jours: Option<i32>,
-    /// Derniers points (30 au plus), du plus ancien au plus récent : pour un graphique.
+    /// Derniers points (30 au plus PAR file), du plus ancien au plus récent : pour un graphique.
     pub points: Vec<PointLp>,
 }
 
@@ -584,13 +638,18 @@ impl Historique {
             (apres == avant + 1).then(|| lp_absolus(&rang) - lp_absolus(&prec.rang))
         });
         if let (Some(d), Some(prec)) = (delta, &precedent) {
-            // La partie : la plus récente de cette file, terminée APRÈS le point précédent,
-            // pas encore notée. (Si Riot a mis du retard, on ne la trouve pas : tant pis.)
-            let partie = self
+            // Les parties candidates : même file, pas un remake, LP pas encore notés,
+            // terminées APRÈS le point précédent. On n'écrit les LP que s'il y en a
+            // EXACTEMENT une : sinon on ne sait pas laquelle, et un LP faux est pire
+            // qu'un LP absent. (Si Riot a publié le rang avant la partie : zéro candidate.)
+            let mut candidates: Vec<&mut ResumePartie> = self
                 .parties
                 .iter_mut()
-                .find(|p| p.file == file.queue() && !p.remake && p.date + p.duree as u64 >= prec.date);
-            if let Some(p) = partie.filter(|p| p.lp.is_none()) {
+                .filter(|p| {
+                    p.file == file.queue() && !p.remake && p.lp.is_none() && p.date + p.duree as u64 >= prec.date
+                })
+                .collect();
+            if let [p] = candidates.as_mut_slice() {
                 p.lp = Some(d);
             }
         }
@@ -598,9 +657,10 @@ impl Historique {
         delta
     }
 
-    /// Série en cours (remakes ignorés) : +3 = 3 victoires d'affilée, -2 = 2 défaites.
-    pub fn serie(&self) -> i32 {
-        let mut jouees = self.parties.iter().filter(|p| !p.remake);
+    /// Série en cours dans ces files (remakes ignorés) : +3 = 3 victoires d'affilée,
+    /// -2 = 2 défaites. Une série d'ARAM ne dit rien de ta forme en classée.
+    pub fn serie(&self, files: &[u16]) -> i32 {
+        let mut jouees = self.parties.iter().filter(|p| !p.remake && files.contains(&p.file));
         let Some(premiere) = jouees.next() else { return 0 };
         let n = 1 + jouees.take_while(|p| p.victoire == premiere.victoire).count() as i32;
         if premiere.victoire { n } else { -n }
@@ -608,11 +668,15 @@ impl Historique {
 
     pub fn stats(&self) -> StatsPerso {
         let p = &self.parties;
+        // `then_some` : Some(valeur) seulement si la condition est vraie -> les parties
+        // hors Faille sont ignorées dans ces regroupements.
+        let faille = |x: &ResumePartie| x.famille() == Famille::Faille;
         StatsPerso {
-            total: grouper(p, |_| Some(())).first().map(|x| x.1).unwrap_or_default(),
-            par_champion: grouper(p, |x| Some(x.champion)),
-            par_role: grouper(p, |x| x.role),
-            par_patch: grouper(p, |x| Some(x.patch.clone())),
+            total: grouper(p, |x| faille(x).then_some(())).first().map(|x| x.1).unwrap_or_default(),
+            par_champion: grouper(p, |x| faille(x).then_some(x.champion)),
+            par_role: grouper(p, |x| x.role.filter(|_| faille(x))),
+            par_patch: grouper(p, |x| faille(x).then(|| x.patch.clone())),
+            par_famille: grouper(p, |x| Some(x.famille())),
             par_file: grouper(p, |x| Some(x.file)),
         }
     }
@@ -630,7 +694,14 @@ impl Historique {
             let reference = points.iter().rev().find(|p| p.date < debut).or_else(|| points.first())?;
             Some(lp_absolus(&actuel.rang) - lp_absolus(&reference.rang))
         };
-        let debut_points = self.lp.len().saturating_sub(30);
+        // 30 derniers points de chaque file, puis remis dans l'ordre des dates.
+        let derniers = |f: FileClassee| {
+            let points: Vec<&PointLp> = self.lp.iter().filter(|p| p.file == f).collect();
+            points[points.len().saturating_sub(POINTS_PAR_FILE)..].to_vec()
+        };
+        let mut points: Vec<PointLp> =
+            derniers(FileClassee::Solo).into_iter().chain(derniers(FileClassee::Flex)).cloned().collect();
+        points.sort_by_key(|p| p.date); // tri stable : l'ordre d'arrivée est gardé à égalité
         ProgressionLp {
             solo: self.dernier_point(FileClassee::Solo).map(|p| p.rang.clone()),
             flex: self.dernier_point(FileClassee::Flex).map(|p| p.rang.clone()),
@@ -638,7 +709,7 @@ impl Historique {
             meilleur_flex: meilleur(FileClassee::Flex),
             solo_7_jours: sept_jours(FileClassee::Solo),
             flex_7_jours: sept_jours(FileClassee::Flex),
-            points: self.lp[debut_points..].to_vec(),
+            points,
         }
     }
 }
@@ -766,10 +837,14 @@ static EN_COURS: AtomicBool = AtomicBool::new(false);
 static A_REFAIRE: AtomicBool = AtomicBool::new(false);
 /// Une des demandes en attente venait d'une fin de partie (récap voulu).
 static RECAP_VOULU: AtomicBool = AtomicBool::new(false);
+/// Compte de la DERNIÈRE demande : relu à chaque tour de la boucle de synchro, pour
+/// qu'une synchro refaite après un changement de compte vise le bon compte.
+static PUUID_DEMANDE: Mutex<Option<Box<str>>> = Mutex::new(None);
 
 /// Lance une synchro en arrière-plan. `apres_partie` : on attend que Riot publie la
 /// partie (quelques dizaines de secondes) puis on prépare le récap.
 pub fn lancer_synchro(api: Arc<RiotApi>, puuid: Box<str>, apres_partie: bool, tx: Sender<Evenement>) {
+    *PUUID_DEMANDE.lock().unwrap() = Some(puuid);
     if apres_partie {
         RECAP_VOULU.store(true, Ordering::SeqCst);
     }
@@ -779,10 +854,12 @@ pub fn lancer_synchro(api: Arc<RiotApi>, puuid: Box<str>, apres_partie: bool, tx
     }
     let _ = std::thread::Builder::new().name("historique".into()).spawn(move || {
         let dossier = dossier();
-        let _ = std::fs::write(dossier.join("dernier-compte.txt"), &*puuid);
         loop {
             A_REFAIRE.store(false, Ordering::SeqCst);
             let recap = RECAP_VOULU.swap(false, Ordering::SeqCst);
+            // `clone()` : on relâche le verrou tout de suite (la synchro dure longtemps).
+            let Some(puuid) = PUUID_DEMANDE.lock().unwrap().clone() else { break };
+            let _ = std::fs::write(dossier.join("dernier-compte.txt"), &*puuid);
             if let Some(maj) = une_synchro(&api, &dossier, &puuid, recap) {
                 let _ = tx.send(Evenement::Historique(Box::new(maj)));
             }
@@ -793,9 +870,11 @@ pub fn lancer_synchro(api: Arc<RiotApi>, puuid: Box<str>, apres_partie: bool, tx
             // Une demande a pu arriver entre les deux lignes ci-dessus : on la reprend,
             // sauf si un autre thread l'a déjà fait (`swap` renvoie l'ancienne valeur).
             if !A_REFAIRE.load(Ordering::SeqCst) || EN_COURS.swap(true, Ordering::SeqCst) {
-                break;
+                return;
             }
         }
+        // Sortie par `break` (aucun compte demandé) : on libère la place.
+        EN_COURS.store(false, Ordering::SeqCst);
     });
 }
 
@@ -874,10 +953,12 @@ pub fn publier(maj: MajHistorique, donnees: Option<&crate::ddragon::DonneesJeu>)
     });
 }
 
-/// Série en cours d'après la base locale (0 requête) : sert au badge « en série de
-/// défaites » de MON joueur en partie.
-pub fn serie_locale(puuid: &str) -> i32 {
-    Historique::charger(&dossier(), puuid).serie()
+/// Série en cours d'après la base locale (0 requête) : sert aux badges de série de
+/// MON joueur. `file` : la file de la partie en cours si on la connaît (spectator),
+/// sinon on regarde les classées (solo + flex).
+pub fn serie_locale(puuid: &str, file: Option<u16>) -> i32 {
+    let files: Vec<u16> = file.map_or(vec![420, 440], |f| vec![f]);
+    Historique::charger(&dossier(), puuid).serie(&files)
 }
 
 // =====================================================================
@@ -915,7 +996,7 @@ fn texte_historique(h: &Historique, nom: &dyn Fn(u16) -> String, maintenant: u64
         )
     };
     t.push(format!("=== Historique : {} parties (remakes exclus des stats) ===", h.parties.len()));
-    t.push(ligne_stats("Total", &s.total));
+    t.push(ligne_stats("Total Faille", &s.total));
     let p = h.progression(maintenant);
     for (libelle, actuel, meilleur, semaine) in [
         ("Solo/duo", &p.solo, &p.meilleur_solo, p.solo_7_jours),
@@ -927,12 +1008,14 @@ fn texte_historique(h: &Historique, nom: &dyn Fn(u16) -> String, maintenant: u64
             t.push(format!("  {libelle} : {a}{m}{s7}"));
         }
     }
-    t.push("--- Par champion ---".into());
+    t.push("--- Par champion (Faille) ---".into());
     t.extend(s.par_champion.iter().take(15).map(|(c, g)| ligne_stats(&nom(*c), g)));
     t.push("--- Par rôle ---".into());
     t.extend(s.par_role.iter().map(|(r, g)| ligne_stats(r, g)));
     t.push("--- Par patch ---".into());
     t.extend(s.par_patch.iter().take(5).map(|(pa, g)| ligne_stats(pa, g)));
+    t.push("--- Par famille ---".into());
+    t.extend(s.par_famille.iter().map(|(f, g)| ligne_stats(f.libelle(), g)));
     t.push("--- Par file ---".into());
     t.extend(s.par_file.iter().map(|(f, g)| ligne_stats(nom_file(*f), g)));
     t.push(format!("--- {} dernières parties ---", PARTIES_AFFICHEES.min(h.parties.len())));
@@ -1060,7 +1143,10 @@ mod tests {
         h.ajouter(remake);
         assert_eq!(h.parties.iter().map(|p| &*p.id).collect::<Vec<_>>(), ["D", "C", "B", "A"]);
         let s = h.stats();
-        assert_eq!(s.total.parties, 3);
+        // Le total et les champions ne comptent que la Faille (A et B), pas l'ARAM (C).
+        assert_eq!(s.total.parties, 2);
+        assert!(s.par_champion.iter().all(|(c, _)| *c != 7));
+        assert_eq!(s.par_famille.iter().map(|(f, g)| (*f, g.parties)).collect::<Vec<_>>(), [(Famille::Faille, 2), (Famille::Aram, 1)]);
         assert_eq!(s.par_champion[0].0, 103);
         let ahri = s.par_champion[0].1;
         assert_eq!((ahri.parties, ahri.victoires), (2, 1));
@@ -1070,8 +1156,10 @@ mod tests {
         assert_eq!(s.par_role, vec![("middle", s.total)]);
         assert_eq!(&*s.par_patch[0].0, "16.23");
         assert_eq!(s.par_file[0].0, 420);
-        // Série : le remake est ignoré, la plus récente jouée est une victoire (C).
-        assert_eq!(h.serie(), 1);
+        // Séries par file : en classée, le remake D est ignoré -> la dernière est B (défaite).
+        assert_eq!(h.serie(&[420, 440]), -1);
+        assert_eq!(h.serie(&[450]), 1);
+        assert_eq!(h.serie(&[1700]), 0);
     }
 
     #[test]
@@ -1100,11 +1188,64 @@ mod tests {
         assert!(r.texte("X").last().unwrap().contains("pas encore de moyenne"));
     }
 
+    #[test]
+    fn recap_ne_compare_pas_l_aram_a_la_faille() {
+        let mut h = Historique::default();
+        for i in 1..=3 {
+            h.ajouter(ResumePartie::depuis_match(&match_json(&format!("F{i}"), i, 420, 103, true, (4, 2, 0)), MOI).unwrap());
+        }
+        let aram = ResumePartie::depuis_match(&match_json("A", 10, 450, 103, true, (12, 2, 30)), MOI).unwrap();
+        h.ajouter(aram.clone());
+        let r = Recap::calculer(&h, &aram);
+        assert_eq!(r.parties_champion, 0);
+        assert!(r.lignes.iter().all(|l| l.moyenne.is_none()));
+        // L'Arena non plus, et une normale draft est comparée aux classées (Faille).
+        assert_eq!(famille(1700), Famille::Arena);
+        let draft = ResumePartie::depuis_match(&match_json("D", 11, 400, 103, true, (4, 2, 0)), MOI).unwrap();
+        assert_eq!(Recap::calculer(&h, &draft).parties_champion, 3);
+    }
+
+    #[test]
+    fn promotion_diamant_master_et_lp_seulement_si_une_seule_candidate() {
+        let mut h = Historique::default();
+        h.noter_rang(FileClassee::Solo, rang("DIAMOND", "I", 85, 50, 40), 1_000);
+        h.ajouter(ResumePartie::depuis_match(&match_json("P", 2_000, 420, 1, true, (1, 1, 1)), MOI).unwrap());
+        // Diamant I 85 -> Master 0 LP après une victoire : +15.
+        assert_eq!(h.noter_rang(FileClassee::Solo, rang("MASTER", "I", 0, 51, 40), 5_000), Some(15));
+        assert_eq!(h.parties[0].lp, Some(15));
+        assert_eq!(h.progression(5_000).meilleur_solo.unwrap().palier.as_ref(), "MASTER");
+        // Deux parties classées non notées depuis le point (ex : une arrivée en retard) :
+        // le rang n'a compté qu'une partie, mais on ne sait pas laquelle -> rien d'écrit.
+        h.ajouter(ResumePartie::depuis_match(&match_json("Q", 6_000, 420, 1, false, (1, 1, 1)), MOI).unwrap());
+        h.ajouter(ResumePartie::depuis_match(&match_json("R", 9_000, 420, 1, false, (1, 1, 1)), MOI).unwrap());
+        assert_eq!(h.noter_rang(FileClassee::Solo, rang("DIAMOND", "I", 80, 51, 41), 12_000), Some(-20));
+        assert!(h.parties.iter().filter(|p| &*p.id != "P").all(|p| p.lp.is_none()));
+    }
+
+    #[test]
+    fn trente_points_lp_par_file() {
+        let mut h = Historique::default();
+        for i in 0..40u16 {
+            h.noter_rang(FileClassee::Solo, rang("GOLD", "II", i, i, 0), i as u64 * 10);
+        }
+        h.noter_rang(FileClassee::Flex, rang("SILVER", "I", 5, 1, 0), 15);
+        let points = h.progression(1_000).points;
+        assert_eq!(points.iter().filter(|p| p.file == FileClassee::Solo).count(), 30);
+        // Le point flex, ancien, est gardé quand même (30 PAR file), et tout est trié par date.
+        assert_eq!(points.iter().filter(|p| p.file == FileClassee::Flex).count(), 1);
+        assert!(points.windows(2).all(|w| w[0].date <= w[1].date));
+    }
+
     /// Faux Riot : des parties en mémoire, et compte les appels.
+    #[derive(Default)]
     struct FausseSource {
         parties: Vec<Value>,
         rangs: Value,
         appels: RefCell<u32>,
+        /// Ces parties répondent 404 (effacées chez Riot).
+        effacees: Vec<&'static str>,
+        /// Ces parties échouent (réseau coupé) tant qu'elles sont dans la liste.
+        en_panne: RefCell<Vec<&'static str>>,
     }
 
     impl SourceRiot for FausseSource {
@@ -1120,6 +1261,12 @@ mod tests {
         }
         fn partie(&self, id: &str) -> Result<Value, ErreurApi> {
             *self.appels.borrow_mut() += 1;
+            if self.effacees.contains(&id) {
+                return Err(ErreurApi::Introuvable);
+            }
+            if self.en_panne.borrow().contains(&id) {
+                return Err(ErreurApi::Reseau);
+            }
             self.parties.iter().find(|p| p["metadata"]["matchId"] == id).cloned().ok_or(ErreurApi::Introuvable)
         }
         fn rangs(&self, _: &str) -> Result<Value, ErreurApi> {
@@ -1141,7 +1288,7 @@ mod tests {
                 match_json("EUW1_2", 5_000, 450, 7, false, (3, 8, 20)),
             ],
             rangs: rangs_json(50, 10, 10),
-            appels: RefCell::new(0),
+            ..Default::default()
         };
         let r = synchroniser(&source, &dossier, MOI, Duration::ZERO, 10_000, true);
         assert!(r.erreur.is_none());
@@ -1170,6 +1317,36 @@ mod tests {
         assert_eq!(*source.appels.borrow(), 1);
         let texte = texte_historique(&h, &|c| format!("champ{c}"), 40_000);
         assert!(texte.iter().any(|l| l.contains("champ103") && l.contains("+18 LP")));
+        let _ = std::fs::remove_dir_all(dossier);
+    }
+
+    #[test]
+    fn coupure_reseau_puis_reprise_sans_doublon_et_partie_404() {
+        let dossier = dossier_test("reprise");
+        let source = FausseSource {
+            parties: (1..=4u64).map(|i| match_json(&format!("EUW1_{i}"), i * 1_000, 420, 103, true, (1, 1, 1))).collect(),
+            rangs: rangs_json(10, 4, 0),
+            effacees: vec!["EUW1_2"],
+            en_panne: RefCell::new(vec!["EUW1_3"]),
+            ..Default::default()
+        };
+        // 1 OK, 2 en 404 (ignorée), 3 en panne -> arrêt ; 1 est sauvée, le rang n'est pas noté.
+        let r = synchroniser(&source, &dossier, MOI, Duration::ZERO, 10_000, true);
+        assert_eq!(r.erreur, Some(ErreurApi::Reseau));
+        assert_eq!(r.nouvelles, vec![Box::from("EUW1_1")]);
+        assert!(r.historique.lp.is_empty());
+        assert_eq!(Historique::charger(&dossier, MOI).parties.len(), 1);
+        // Le réseau revient : on reprend après la 1, sans la retélécharger.
+        source.en_panne.borrow_mut().clear();
+        *source.appels.borrow_mut() = 0;
+        let r = synchroniser(&source, &dossier, MOI, Duration::ZERO, 20_000, true);
+        assert!(r.erreur.is_none());
+        assert_eq!(r.nouvelles, vec![Box::from("EUW1_3"), Box::from("EUW1_4")]);
+        assert_eq!(*source.appels.borrow(), 5); // ids + 2 (404) + 3 + 4 + rang
+        let h = Historique::charger(&dossier, MOI);
+        let ids: Vec<&str> = h.parties.iter().map(|p| &*p.id).collect();
+        assert_eq!(ids, ["EUW1_4", "EUW1_3", "EUW1_1"]);
+        assert_eq!(h.lp.len(), 1);
         let _ = std::fs::remove_dir_all(dossier);
     }
 }

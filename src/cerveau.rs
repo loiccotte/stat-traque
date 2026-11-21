@@ -16,6 +16,7 @@ use crate::lcu::Lcu;
 use crate::live::{self, InstantanePartie, SuiviPartie};
 use crate::rangs::InfoJoueur;
 use crate::riot_api::RiotApi;
+use crate::affichage::{self, VueChampSelect, VueRunes};
 use crate::{compo, log, stats};
 
 /// Comment l'app tourne.
@@ -74,12 +75,15 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
         suivi: None,
     };
     crate::tray::definir_etat("En attente du client LoL");
+    let cle = etat.api.is_some();
+    affichage::modifier(|e| e.cle_api = cle);
     // `recv()` bloque sans consommer de CPU jusqu'au prochain événement.
     while let Ok(ev) = rx.recv() {
         match ev {
             Evenement::ClientConnecte(lcu) => {
                 log!("Client LoL connecté.");
                 etat.lcu = lcu;
+                affichage::modifier(|e| e.client_connecte = true);
                 crate::tray::definir_etat("Client LoL connecté");
             }
             Evenement::ClientPerdu => {
@@ -87,6 +91,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                 // On NE coupe PAS le suivi de partie : le jeu continue sans le client
                 // (beaucoup ferment le client pendant la partie). Il s'arrête seul à la fin.
                 etat.lcu = None;
+                affichage::modifier(|e| e.client_connecte = false);
                 crate::tray::definir_etat("En attente du client LoL");
             }
             Evenement::Moi { puuid } => etat.mon_puuid = Some(puuid),
@@ -109,11 +114,13 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                 if let Some(d) = &etat.donnees {
                     afficher_rangs(d, &joueurs);
                 }
+                affichage::modifier(|e| e.rangs = joueurs);
             }
             Evenement::Partie(p) => {
                 if etat.mode != Mode::Tray {
                     afficher_partie(&p);
                 }
+                affichage::modifier(|e| e.partie = Some(p));
             }
             Evenement::Quitter => break,
         }
@@ -129,7 +136,13 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     if p == Phase::ChampSelect {
         etat.cs = SuiviChampSelect::default();
         etat.partie_scoutee = false;
+        affichage::modifier(|e| {
+            e.champ_select = Some(VueChampSelect::default());
+            e.rangs.clear();
+            e.partie = None;
+        });
     }
+    affichage::modifier(|e| e.phase = Some(p));
     // Rangs des 10 joueurs, une fois par partie.
     if p.en_partie() && !etat.partie_scoutee {
         if let (Some(api), Some(puuid)) = (&etat.api, &etat.mon_puuid) {
@@ -158,6 +171,12 @@ fn id_dd(d: &DonneesJeu, champion: u16) -> Option<&str> {
 
 fn champ_select(etat: &mut Etat, d: &DonneesJeu, cs: ChampSelect, tx: &Sender<Evenement>) {
     let role = cs.role.as_deref();
+    affichage::modifier(|e| {
+        let v = e.champ_select.get_or_insert_with(VueChampSelect::default);
+        v.mon_champion = (cs.champion != 0).then(|| d.nom_champion(cs.champion).to_string());
+        v.role = cs.role.as_deref().map(String::from);
+        v.verrouille = cs.verrouille;
+    });
     // 1. Mon champion.
     if cs.champion != 0 && cs.champion != etat.cs.champion_annonce {
         etat.cs.champion_annonce = cs.champion;
@@ -197,21 +216,38 @@ fn afficher_compos(d: &DonneesJeu, allies: &[u16], ennemis: &[u16], role: Option
     let nom = |id: &str| d.champions.values().find(|c| &*c.id == id).map_or(id.to_string(), |c| c.nom.to_string());
     let a: Vec<&str> = allies.iter().filter_map(|&c| id_dd(d, c)).collect();
     let e: Vec<&str> = ennemis.iter().filter_map(|&c| id_dd(d, c)).collect();
-    log!("--- Compo alliée ({}/5) ---\n{}", a.len(), compo::analyser(&a).texte(&nom));
-    if !e.is_empty() {
-        log!("--- Compo ennemie ({}/5) ---\n{}", e.len(), compo::analyser(&e).texte(&nom));
-        for conseil in compo::comparer(&a, &e) {
+    let analyse_a = compo::analyser(&a);
+    let analyse_e = (!e.is_empty()).then(|| compo::analyser(&e));
+    let plan = compo::comparer(&a, &e);
+    log!("--- Compo alliée ({}/5) ---\n{}", a.len(), analyse_a.texte(&nom));
+    if let Some(ae) = &analyse_e {
+        log!("--- Compo ennemie ({}/5) ---\n{}", e.len(), ae.texte(&nom));
+        for conseil in &plan {
             log!("  > {conseil}");
         }
     }
     // Picks conseillés tant que je n'ai pas verrouillé.
+    let mut picks = Vec::new();
     if let (Some(r), false) = (role, verrouille) {
-        let s = compo::suggestions(&a, &e, r, 5);
-        if !s.is_empty() {
-            let liste: Vec<String> = s.iter().map(|x| format!("{} ({})", nom(x.id), x.raison)).collect();
+        picks = compo::suggestions(&a, &e, r, 5).into_iter().map(|x| (nom(x.id), x.raison)).collect();
+        if !picks.is_empty() {
+            let liste: Vec<String> = picks.iter().map(|(n, r)| format!("{n} ({r})")).collect();
             log!("  Picks qui complètent la compo : {}", liste.join(" · "));
         }
     }
+    let noms = |ids: &[u16]| ids.iter().map(|&c| d.nom_champion(c).to_string()).collect::<Vec<_>>();
+    let (na, ne) = (noms(allies), noms(ennemis));
+    affichage::modifier(move |etat| {
+        let v = etat.champ_select.get_or_insert_with(VueChampSelect::default);
+        v.allies = na;
+        v.ennemis = ne;
+        v.analyse_allies = Some(analyse_a);
+        v.analyse_ennemis = analyse_e;
+        v.plan_de_jeu = plan;
+        if !verrouille {
+            v.picks_conseilles = picks;
+        }
+    });
 }
 
 fn nom_page(d: &DonneesJeu, page: &stats::PageRunes) -> String {
@@ -237,11 +273,24 @@ fn runes(etat: &Etat, d: &DonneesJeu, champion: u16, role: Option<&str>) {
     if r.plus_jouee.0 != r.page {
         log!("  Page la plus jouée : {}  — {:.1} % sur {} parties", nom_page(d, &r.plus_jouee.0), r.plus_jouee.1.winrate(), r.plus_jouee.1.parties);
     }
+    let mut texte_sorts = None;
     let sorts = r.sorts.map(|((a, b), c)| {
         let n = |id: u16| d.sorts.get(&id).map_or(id.to_string(), |s| s.to_string());
-        log!("Sorts conseillés : {} + {}  — {:.1} % sur {} parties", n(a), n(b), c.winrate(), c.parties);
+        let t = format!("{} + {}  — {:.1} % sur {} parties", n(a), n(b), c.winrate(), c.parties);
+        log!("Sorts conseillés : {t}");
+        texte_sorts = Some(t);
         (a, b)
     });
+    let vue = VueRunes {
+        page: nom_page(d, &r.page),
+        winrate: r.stats.winrate(),
+        parties: r.stats.parties,
+        pick_rate: r.pick_rate,
+        parties_champion: r.parties_champion,
+        sorts: texte_sorts,
+        role: r.role.clone(),
+    };
+    affichage::modifier(|e| e.champ_select.get_or_insert_with(VueChampSelect::default).runes = Some(vue));
 
     // Application dans le client (pas en rejeu ; désactivable dans reglages.txt).
     let Some(lcu) = etat.lcu.clone().filter(|_| etat.mode != Mode::Rejeu) else { return };

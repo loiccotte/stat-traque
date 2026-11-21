@@ -23,6 +23,7 @@
 // Rappel Rust : `Option<T>` = une valeur OU rien ; `Result<T, E>` = réussite OU erreur ;
 // `?` = "si ça a raté, on s'arrête et on renvoie l'erreur".
 
+mod affichage;
 mod cerveau;
 mod champselect;
 mod collecte;

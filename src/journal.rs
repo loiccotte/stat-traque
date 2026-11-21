@@ -20,6 +20,7 @@ pub fn initialiser() {
 /// Écrit une ligne. Utilisée via la macro `log!` (comme `println!`).
 pub fn ecrire(message: std::fmt::Arguments) {
     println!("{message}");
+    crate::affichage::message(message.to_string());
     if let Some(f) = FICHIER.lock().unwrap().as_mut() {
         let _ = writeln!(f, "{message}");
     }

@@ -20,6 +20,14 @@ Les agents sont définis dans `.claude/agents/` ; les règles communes dans `CLA
 4. **qualite** relit, teste, vérifie la conformité.
 5. Commit sur la branche de travail, la tâche passe à « fait » ici.
 
+## Branches
+- `claude/sharp-hypatia-pj24j6` : branche d'intégration (toujours compilable, tests verts).
+- `feature/<nom>` : une branche par feature, développée par l'agent du domaine dans un
+  worktree isolé, partie de la branche d'intégration.
+- Avant fusion : revue par l'agent `qualite` (et `perf` si la RAM / la taille bougent),
+  corrections, puis fusion dans la branche d'intégration.
+- Contrat commun : `src/affichage.rs` (le cerveau remplit, l'interface lit).
+
 ## Tâches
 | ID | Tâche | Agent | Dépend de | Critère de fin | État |
 |---|---|---|---|---|---|

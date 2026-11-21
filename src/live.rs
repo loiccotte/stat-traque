@@ -38,7 +38,7 @@ pub struct JoueurLive {
     pub items: Vec<u32>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstantanePartie {
     pub mode: Box<str>,
     pub secondes: u32,

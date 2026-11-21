@@ -7,7 +7,7 @@
 //!  2. Paliers Fer à Diamant (league-v4 `entries/{palier}/{division}?page=N`) : SEULEMENT
 //!     les références de la fiche joueur (moyenne / écart-type des mesures par rôle,
 //!     voir metriques.rs). Le temps restant est réparti à parts égales entre les 7
-//!     paliers. Division et page tournent chaque jour pour varier l'échantillon.
+//!     paliers. La division tourne d'un joueur à l'autre, la page chaque jour.
 //!
 //! Seules les parties du patch actuel sont gardées. Pas de JSON gardé : seulement les
 //! comptes, et la liste des parties déjà vues (pour ne jamais compter deux fois la même).
@@ -146,17 +146,24 @@ pub fn collecter(minutes: u64) {
     }
 
     // 2. Paliers sous Master : références seulement, temps restant partagé à parts égales.
+    // La page tourne chaque jour ; la DIVISION tourne d'un joueur à l'autre (I, II,
+    // III, IV, I...) : chaque palier est représenté en entier, pas par une seule division.
     let jour = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400) as usize;
-    let division = DIVISIONS[jour % DIVISIONS.len()];
-    let page = 1 + (jour / DIVISIONS.len()) % 5;
+    let page = 1 + jour % 5;
     for (i, palier) in PALIERS_BAS.iter().enumerate() {
         let reste = fin.saturating_duration_since(Instant::now());
         let limite = Instant::now() + reste / (PALIERS_BAS.len() - i) as u32;
         let Some(indice) = indice_palier(palier) else { continue };
-        let Ok(entrees) = api.entrees_ligue(palier, division, page as u32) else { continue };
-        let joueurs: Vec<String> =
-            entrees.as_array().into_iter().flatten().filter_map(|e| e["puuid"].as_str().map(String::from)).collect();
-        log!("{palier} {division} (page {page}) : {} joueurs, {} s", joueurs.len(), limite.saturating_duration_since(Instant::now()).as_secs());
+        // Une page par division (4 requêtes, en cache 1 h).
+        let listes: Vec<Vec<String>> = DIVISIONS
+            .iter()
+            .map(|division| {
+                let entrees = api.entrees_ligue(palier, division, page as u32).unwrap_or_default();
+                entrees.as_array().into_iter().flatten().filter_map(|e| e["puuid"].as_str().map(String::from)).collect()
+            })
+            .collect();
+        let joueurs = alterner(&listes);
+        log!("{palier} (page {page}, 4 divisions) : {} joueurs, {} s", joueurs.len(), limite.saturating_duration_since(Instant::now()).as_secs());
         for puuid in joueurs {
             if !traiter(&mut s, &mut vus, &puuid, PARTIES_PAR_JOUEUR_PALIER, Usage::References(indice), limite) {
                 break;
@@ -166,4 +173,26 @@ pub fn collecter(minutes: u64) {
     sauver(&s, &vus);
     log!("Collecte terminée : {ajoutees} parties ajoutées, {} au total. Fichier : {}", s.nombre_parties_vues(), chemin.display());
     log!("Fichier à publier (allégé) : {}", chemin_publication.display());
+}
+
+/// Joueur k = le (k / 4)-ième de la division k % 4 : I, II, III, IV, I, II...
+/// Une division plus courte que les autres est simplement sautée quand elle est vide.
+fn alterner(listes: &[Vec<String>]) -> Vec<String> {
+    let plus_longue = listes.iter().map(Vec::len).max().unwrap_or(0);
+    (0..plus_longue * listes.len())
+        .filter_map(|k| listes[k % listes.len()].get(k / listes.len()).cloned())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn la_division_tourne_par_joueur() {
+        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let listes = vec![l(&["a1", "a2"]), l(&["b1"]), l(&[]), l(&["d1", "d2", "d3"])];
+        assert_eq!(alterner(&listes), l(&["a1", "b1", "d1", "a2", "d2", "d3"]));
+        assert!(alterner(&[]).is_empty());
+    }
 }

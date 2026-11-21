@@ -44,7 +44,6 @@ pub enum Evenement {
     DemandeFiche { puuid: Box<str> },
     /// Fiche calculée (fiche.rs). `Box` : contenu gros, l'événement reste petit.
     Fiche(Box<crate::fiche::Fiche>),
-
     /// La fenêtre principale vient de s'ouvrir ou de se fermer (voir ui/parent.rs) :
     /// le cerveau relance ou arrête le suivi de partie (onglet Partie).
     Fenetre,

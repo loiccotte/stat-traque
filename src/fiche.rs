@@ -35,6 +35,7 @@
 //!   écart = 6 × (winrate saison - 50) × n / (n + 50) [borné ±250]
 //!         + 2 × (winrate récent - 50) × m / (m + 10).
 //!   MMR estimé = LP « absolus » du rang (historique::lp_absolus) + écart.
+//!   L'écart est arrondi à 25 LP, et la confiance ne dépasse jamais « moyenne ».
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -210,11 +211,12 @@ pub fn radar(parties: &[ResumePartie], palier: usize, refs: &References) -> Rada
 // 2. MMR estimé
 // =====================================================================
 
+/// Confiance dans l'estimation. Volontairement PLAFONNÉE à « moyenne » : sans le
+/// vrai MMR (Riot ne le publie pas), on ne peut jamais en être sûr.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Confiance {
     Faible,
     Moyenne,
-    Bonne,
 }
 
 impl Confiance {
@@ -222,10 +224,12 @@ impl Confiance {
         match self {
             Confiance::Faible => "faible",
             Confiance::Moyenne => "moyenne",
-            Confiance::Bonne => "bonne",
         }
     }
 }
+
+/// L'écart est arrondi à 25 LP près : plus de précision serait trompeuse.
+const ARRONDI_MMR: f32 = 25.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EstimationMmr {
@@ -239,7 +243,7 @@ pub struct EstimationMmr {
 
 impl EstimationMmr {
     fn nouvelle(rang: &Rang, ecart: f32, confiance: Confiance, raisons: Vec<String>) -> Self {
-        let ecart = ecart.round() as i32;
+        let ecart = ((ecart / ARRONDI_MMR).round() * ARRONDI_MMR) as i32;
         EstimationMmr { lp_absolus: (lp_absolus(rang) + ecart).max(0), ecart, confiance, raisons }
     }
 }
@@ -308,7 +312,6 @@ pub fn mmr_moi(rang: Option<&Rang>, parties: &[ResumePartie]) -> Option<Estimati
         raisons.push(format!("{wr:.0} % de victoires sur les {} dernières classées", solo.len()));
     }
     let confiance = match avec_lp {
-        10.. => Confiance::Bonne,
         4.. => Confiance::Moyenne,
         _ => Confiance::Faible,
     };
@@ -336,7 +339,6 @@ pub fn mmr_autre(rang: Option<&Rang>, recentes: &[ResumePartie]) -> Option<Estim
         raisons.push(format!("tendance : {wr:.0} % sur ses {} dernières classées", solo.len()));
     }
     let confiance = match n as u32 {
-        200.. => Confiance::Bonne,
         30.. => Confiance::Moyenne,
         _ => Confiance::Faible,
     };
@@ -588,49 +590,77 @@ type LecturePartie = Result<Option<ResumePartie>, ErreurApi>;
 /// Rang solo et dernières parties classées d'un autre joueur : 2 + `nombre` requêtes
 /// au plus. Les parties sont lues EN PARALLÈLE (`PARALLELE` à la fois, le limiteur
 /// global fait respecter les limites de la clé).
-pub fn charger_autre(source: &impl SourceFiche, puuid: &str, nombre: u8) -> (Option<Rang>, Vec<ResumePartie>, Option<ErreurApi>) {
-    let rang = match source.rangs(puuid) {
-        Ok(v) => crate::rangs::lire_rangs(&v).0,
-        // Clé expirée / absente : inutile d'insister.
-        Err(e @ (ErreurApi::CleInvalide | ErreurApi::PasDeCle)) => return (None, Vec::new(), Some(e)),
-        Err(ErreurApi::Introuvable) => None,
-        Err(e) => return (None, Vec::new(), Some(e)),
-    };
-    let ids = match source.ids_classees(puuid, nombre) {
-        Ok(ids) => ids,
-        Err(e) => return (rang, Vec::new(), Some(e)),
-    };
-    let ids: Vec<String> = ids.into_iter().take(nombre as usize).collect();
-    // Chaque fil prend l'indice suivant (`fetch_add`) jusqu'à épuisement.
-    let suivant = AtomicUsize::new(0);
-    let resultats: Mutex<Vec<(usize, LecturePartie)>> = Mutex::new(Vec::new());
-    std::thread::scope(|s| {
-        for _ in 0..PARALLELE.min(ids.len()) {
-            s.spawn(|| loop {
-                let i = suivant.fetch_add(1, Ordering::SeqCst);
-                let Some(id) = ids.get(i) else { break };
-                let r = source.partie(id).map(|json| ResumePartie::depuis_match(&json, puuid));
-                let bloque = matches!(r, Err(ErreurApi::CleInvalide | ErreurApi::PasDeCle));
-                resultats.lock().unwrap().push((i, r));
-                if bloque {
-                    suivant.store(usize::MAX / 2, Ordering::SeqCst); // les autres fils s'arrêtent
-                    break;
-                }
-            });
-        }
-    });
-    let mut resultats = resultats.into_inner().unwrap_or_default();
-    resultats.sort_by_key(|(i, _)| *i); // ordre des ids : plus récentes d'abord
-    let mut erreur = None;
-    let mut parties = Vec::new();
-    for (_, r) in resultats {
-        match r {
-            Ok(Some(p)) => parties.push(p),
-            Ok(None) | Err(ErreurApi::Introuvable) => {}
-            Err(e) => erreur = erreur.or(Some(e)),
+/// Ce que `charger_autre` a obtenu de Riot.
+#[derive(Debug, Default)]
+pub struct Chargement {
+    pub rang: Option<Rang>,
+    /// Plus récentes d'abord.
+    pub parties: Vec<ResumePartie>,
+    pub erreur: Option<ErreurApi>,
+    /// Requêtes de CETTE fiche seulement (compteurs par fil, voir riot_api).
+    pub requetes: Compteurs,
+}
+
+pub fn charger_autre(source: &impl SourceFiche, puuid: &str, nombre: u8) -> Chargement {
+    let avant = Compteurs::du_fil();
+    let mut c = Chargement::default();
+    match source.rangs(puuid) {
+        Ok(v) => c.rang = crate::rangs::lire_rangs(&v).0,
+        Err(ErreurApi::Introuvable) => {}
+        // Clé expirée / absente, réseau... : inutile d'insister.
+        Err(e) => {
+            c.erreur = Some(e);
+            c.requetes = Compteurs::du_fil_depuis(avant);
+            return c;
         }
     }
-    (rang, parties, erreur)
+    let ids = match source.ids_classees(puuid, nombre) {
+        Ok(ids) => ids,
+        Err(e) => {
+            c.erreur = Some(e);
+            c.requetes = Compteurs::du_fil_depuis(avant);
+            return c;
+        }
+    };
+    c.requetes = Compteurs::du_fil_depuis(avant);
+    let ids: Vec<String> = ids.into_iter().take(nombre as usize).collect();
+    // Chaque fil prend l'indice suivant (`fetch_add`) jusqu'à épuisement, et mesure
+    // ses propres requêtes (rendues à la fin, quand le fil se termine).
+    let suivant = AtomicUsize::new(0);
+    let resultats: Mutex<Vec<(usize, LecturePartie)>> = Mutex::new(Vec::new());
+    let couts: Vec<Compteurs> = std::thread::scope(|s| {
+        let fils: Vec<_> = (0..PARALLELE.min(ids.len()))
+            .map(|_| {
+                s.spawn(|| {
+                    let debut = Compteurs::du_fil();
+                    loop {
+                        let i = suivant.fetch_add(1, Ordering::SeqCst);
+                        let Some(id) = ids.get(i) else { break };
+                        let r = source.partie(id).map(|json| ResumePartie::depuis_match(&json, puuid));
+                        let bloque = matches!(r, Err(ErreurApi::CleInvalide | ErreurApi::PasDeCle));
+                        resultats.lock().unwrap().push((i, r));
+                        if bloque {
+                            suivant.store(usize::MAX / 2, Ordering::SeqCst); // les autres fils s'arrêtent
+                            break;
+                        }
+                    }
+                    Compteurs::du_fil_depuis(debut)
+                })
+            })
+            .collect();
+        fils.into_iter().filter_map(|f| f.join().ok()).collect()
+    });
+    c.requetes = couts.into_iter().fold(c.requetes, Compteurs::plus);
+    let mut resultats = resultats.into_inner().unwrap_or_default();
+    resultats.sort_by_key(|(i, _)| *i); // ordre des ids : plus récentes d'abord
+    for (_, r) in resultats {
+        match r {
+            Ok(Some(p)) => c.parties.push(p),
+            Ok(None) | Err(ErreurApi::Introuvable) => {}
+            Err(e) => c.erreur = c.erreur.or(Some(e)),
+        }
+    }
+    c
 }
 
 /// Références du patch (lignes `R` du fichier de stats, lues en flux). Vides si le
@@ -646,16 +676,17 @@ pub fn references(patch: Option<&str>) -> References {
 pub fn fiche_moi(dossier: &Path, puuid: &str, refs: &References) -> Fiche {
     let h = Historique::charger(dossier, puuid);
     let rang = h.progression(0).solo;
-    calculer(puuid, "Moi", true, rang, &h.parties, refs)
+    // Mon Riot ID (lu dans mes parties, voir historique::riot_id_local), sinon « Moi ».
+    let nom = historique::riot_id_local(dossier, puuid).unwrap_or_else(|| "Moi".to_string());
+    calculer(puuid, &nom, true, rang, &h.parties, refs)
 }
 
 /// Fiche d'un autre joueur (≤ 11 requêtes).
 pub fn fiche_autre(source: &impl SourceFiche, puuid: &str, nom: &str, refs: &References) -> Fiche {
-    let avant = Compteurs::maintenant();
-    let (rang, parties, erreur) = charger_autre(source, puuid, PARTIES_AUTRE);
-    let mut f = calculer(puuid, nom, false, rang, &parties, refs);
-    f.erreur = erreur.map(|e| e.to_string());
-    f.requetes = Compteurs::depuis(avant);
+    let c = charger_autre(source, puuid, PARTIES_AUTRE);
+    let mut f = calculer(puuid, nom, false, c.rang, &c.parties, refs);
+    f.erreur = c.erreur.map(|e| e.to_string());
+    f.requetes = c.requetes;
     f
 }
 
@@ -686,28 +717,42 @@ pub fn nom_autorise(puuid: &str) -> Option<String> {
 /// Lance le calcul d'une fiche en arrière-plan ; le résultat arrive en
 /// `Evenement::Fiche`. Si une fiche est déjà en cours, la demande attend la fin
 /// (seule la DERNIÈRE demande est gardée).
-pub fn lancer(api: Arc<RiotApi>, puuid: String, nom: String, moi: bool, patch: Option<String>, tx: Sender<Evenement>) {
+/// `api` : None sans clé API ; ma propre fiche marche quand même (0 requête).
+pub fn lancer(api: Option<Arc<RiotApi>>, puuid: String, nom: String, moi: bool, patch: Option<String>, tx: Sender<Evenement>) {
     *DEMANDE.lock().unwrap() = Some((puuid, nom, moi));
     if EN_COURS.swap(true, Ordering::SeqCst) {
         return;
     }
     affichage::modifier(|e| e.fiche_en_cours = true);
-    let _ = std::thread::Builder::new().name("fiche".into()).spawn(move || {
+    let lance = std::thread::Builder::new().name("fiche".into()).spawn(move || {
         let refs = references(patch.as_deref());
         loop {
             let Some((puuid, nom, moi)) = DEMANDE.lock().unwrap().take() else {
+                // Indicateur éteint AVANT de libérer la place : sinon une nouvelle
+                // demande pourrait l'allumer puis le voir éteint par nous.
+                affichage::modifier(|e| e.fiche_en_cours = false);
                 EN_COURS.store(false, Ordering::SeqCst);
-                // Une demande a pu arriver juste avant `store(false)` : on la reprend.
+                // Une demande a pu arriver juste avant `store(false)` : on la reprend
+                // (sauf si un autre fil l'a déjà fait : `swap` renvoie l'ancienne valeur).
                 if DEMANDE.lock().unwrap().is_some() && !EN_COURS.swap(true, Ordering::SeqCst) {
+                    affichage::modifier(|e| e.fiche_en_cours = true);
                     continue;
                 }
                 break;
             };
-            let f = if moi { fiche_moi(&historique::dossier(), &puuid, &refs) } else { fiche_autre(&*api, &puuid, &nom, &refs) };
+            let f = match (&api, moi) {
+                (_, true) => fiche_moi(&historique::dossier(), &puuid, &refs),
+                (Some(api), false) => fiche_autre(&**api, &puuid, &nom, &refs),
+                (None, false) => continue, // refusé en amont (cerveau) : pas de clé
+            };
             let _ = tx.send(Evenement::Fiche(Box::new(f)));
         }
-        affichage::modifier(|e| e.fiche_en_cours = false);
     });
+    if lance.is_err() {
+        // Fil impossible à créer : on libère la place, sinon plus aucune fiche ne partirait.
+        EN_COURS.store(false, Ordering::SeqCst);
+        affichage::modifier(|e| e.fiche_en_cours = false);
+    }
 }
 
 /// Appelé par le cerveau : journal + état d'affichage.
@@ -724,6 +769,18 @@ pub fn publier(f: Fiche, donnees: Option<&crate::ddragon::DonneesJeu>) {
 // =====================================================================
 // 7. Textes : console et Discord
 // =====================================================================
+
+/// Nom affiché d'un rôle ("bottom" -> "ADC").
+pub fn role_fr(role: &str) -> &str {
+    match role {
+        "top" => "Top",
+        "jungle" => "Jungle",
+        "middle" => "Mid",
+        "bottom" => "ADC",
+        "utility" => "Support",
+        autre => autre,
+    }
+}
 
 /// Barre de texte : 72 -> « ▰▰▰▰▰▰▰▱▱▱ ».
 pub fn barre(score: u8) -> String {
@@ -784,7 +841,7 @@ pub fn texte_console(v: &VueFiche) -> Vec<String> {
         }
     }
     if !v.roles.is_empty() {
-        let r: Vec<String> = v.roles.iter().map(|r| format!("{} {:.0} %", r.role, r.part)).collect();
+        let r: Vec<String> = v.roles.iter().map(|r| format!("{} {:.0} %", role_fr(&r.role), r.part)).collect();
         t.push(format!("  Rôles : {}", r.join(" · ")));
     }
     if !v.etiquettes.is_empty() {
@@ -816,6 +873,10 @@ pub fn fiche_discord(v: &VueFiche) -> String {
     if !v.champions.is_empty() {
         t += &format!("Champions : {}\n", texte_champions(v));
     }
+    if !v.roles.is_empty() {
+        let r: Vec<String> = v.roles.iter().take(2).map(|r| format!("{} {:.0} %", role_fr(&r.role), r.part)).collect();
+        t += &format!("Rôles : {}\n", r.join(" · "));
+    }
     if !v.etiquettes.is_empty() {
         t += &format!("Style : {}\n", v.etiquettes.join(" · "));
     }
@@ -831,7 +892,7 @@ pub fn fiche_discord(v: &VueFiche) -> String {
 pub fn recap_discord(r: &Recap, nom_champion: &str, radar: Option<&Radar>) -> String {
     let p = &r.partie;
     let resultat = if p.remake { "Remake" } else if p.victoire { "Victoire" } else { "Défaite" };
-    let role = p.role.map(|r| format!(" ({r})")).unwrap_or_default();
+    let role = p.role.map(|r| format!(" ({})", role_fr(r))).unwrap_or_default();
     let lp = p.lp.map(|l| format!(" · **{l:+} LP**")).unwrap_or_default();
     let mut t = format!(
         "**{resultat}** — {nom_champion}{role} · {} · {} min{lp}\n**{}/{}/{}** · {:.1} CS/min · {} dégâts · {} vision\n",
@@ -900,7 +961,7 @@ pub fn commande(riot_id: Option<&str>) {
                 return;
             };
             let api = RiotApi::depuis_reglages(&crate::stockage::Reglages::charger());
-            let avant = Compteurs::maintenant();
+            let avant = Compteurs::du_fil();
             let puuid = match api.compte(pseudo, tag) {
                 Ok(c) => c["puuid"].as_str().unwrap_or("").to_string(),
                 Err(e) => {
@@ -908,8 +969,9 @@ pub fn commande(riot_id: Option<&str>) {
                     return;
                 }
             };
+            let cout_compte = Compteurs::du_fil_depuis(avant);
             let mut f = fiche_autre(&api, &puuid, id, &refs);
-            f.requetes = Compteurs::depuis(avant); // compte aussi la requête du Riot ID
+            f.requetes = f.requetes.plus(cout_compte); // + la requête du Riot ID
             f
         }
     };
@@ -1050,12 +1112,12 @@ mod tests {
         }
         let r = rang("EMERALD", "III", 50, 30, 20);
         let m = mmr_moi(Some(&r), &parties).unwrap();
-        // 12 × (25 - 15) = 120, + winrate 66,7 % : 3 × 16,7 × 12/22 ≈ 27 -> ~+147 LP.
-        assert!(m.ecart > 120 && m.ecart < 160, "{}", m.ecart);
-        assert_eq!(m.confiance, Confiance::Bonne);
-        // Émeraude III 50 LP = 2150 LP absolus ; +~147 -> 2297 = Émeraude II.
-        assert_eq!(rang_equivalent(m.lp_absolus), "~Émeraude II");
-
+        // 12 × (25 - 15) = 120, + winrate 66,7 % : 3 × 16,7 × 12/22 ≈ 27 -> ~147, arrondi à 150.
+        assert_eq!(m.ecart, 150);
+        // Confiance plafonnée à « moyenne », même avec 12 parties aux LP connus.
+        assert_eq!(m.confiance, Confiance::Moyenne);
+        // Émeraude III 50 LP = 2150 LP absolus ; +150 -> 2300 = Émeraude I.
+        assert_eq!(rang_equivalent(m.lp_absolus), "~Émeraude I");
         // Pertes > gains : en dessous.
         for p in &mut parties {
             p.lp = p.lp.map(|l| if l > 0 { 14 } else { -26 });
@@ -1072,9 +1134,9 @@ mod tests {
     fn mmr_autre_et_rangs_equivalents() {
         let r = rang("GOLD", "I", 90, 120, 80); // 60 % sur 200 parties
         let m = mmr_autre(Some(&r), &[]).unwrap();
-        // 6 × 10 × 200/250 = 48 LP.
-        assert_eq!(m.ecart, 48);
-        assert_eq!(m.confiance, Confiance::Bonne);
+        // 6 × 10 × 200/250 = 48 LP, arrondi à 50.
+        assert_eq!(m.ecart, 50);
+        assert_eq!(m.confiance, Confiance::Moyenne);
         assert_eq!(rang_equivalent(m.lp_absolus), "~Platine IV");
         assert_eq!(mmr_autre(Some(&rang("GOLD", "I", 0, 5, 5)), &[]).unwrap().confiance, Confiance::Faible);
         assert_eq!(rang_equivalent(2950), "~Master+ 150 LP");
@@ -1114,9 +1176,12 @@ mod tests {
     #[test]
     fn fiche_d_un_autre_joueur_onze_requetes_au_plus() {
         let source = FausseSource { appels: AtomicUsize::new(0), cle_expiree: false };
-        let (rang, parties, erreur) = charger_autre(&source, "moi", PARTIES_AUTRE);
+        let c = charger_autre(&source, "moi", PARTIES_AUTRE);
+        let (rang, parties) = (c.rang, c.parties);
         assert_eq!(source.appels.load(Ordering::SeqCst), 11);
-        assert!(erreur.is_none());
+        assert!(c.erreur.is_none());
+        // Faux Riot : aucune VRAIE requête comptée pour cette fiche.
+        assert_eq!(c.requetes, Compteurs::default());
         assert_eq!(rang.as_ref().unwrap().lp, 40);
         // 9 parties lues, une en 404 : 8, dans l'ordre (plus récentes d'abord).
         assert_eq!(parties.len(), 8);
@@ -1132,10 +1197,23 @@ mod tests {
         assert!(texte_console(&vue).iter().any(|l| l.contains("MMR estimé")));
         // Clé expirée : on s'arrête dès la 1re requête, avec l'erreur.
         let source = FausseSource { appels: AtomicUsize::new(0), cle_expiree: true };
-        let (_, parties, erreur) = charger_autre(&source, "moi", PARTIES_AUTRE);
+        let c = charger_autre(&source, "moi", PARTIES_AUTRE);
         assert_eq!(source.appels.load(Ordering::SeqCst), 1);
-        assert!(parties.is_empty());
-        assert_eq!(erreur, Some(ErreurApi::CleInvalide));
+        assert!(c.parties.is_empty());
+        assert_eq!(c.erreur, Some(ErreurApi::CleInvalide));
+    }
+
+    #[test]
+    fn ma_fiche_porte_mon_riot_id() {
+        let d = std::env::temp_dir().join(format!("stat-traque-fiche-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        assert_eq!(fiche_moi(&d, "moi", &References::default()).nom, "Moi");
+        std::fs::write(d.join("riot-id-moi.txt"), "Zed King#EUW").unwrap();
+        let f = fiche_moi(&d, "moi", &References::default());
+        assert_eq!(f.nom, "Zed King#EUW");
+        assert_eq!(f.requetes, Compteurs::default());
+        assert!(vers_vue(&f, &|c| c.to_string()).texte_partage.contains("Zed King#EUW"));
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]
@@ -1148,7 +1226,7 @@ mod tests {
         derniere.lp = Some(21);
         h.ajouter(derniere);
         let texte = texte_partage_derniere(&h, "Ahri", &refs_or_mid());
-        assert!(texte.starts_with("**Victoire** — Ahri (middle) · Classée solo/duo · 30 min · **+21 LP**"), "{texte}");
+        assert!(texte.starts_with("**Victoire** — Ahri (Mid) · Classée solo/duo · 30 min · **+21 LP**"), "{texte}");
         assert!(texte.contains("vs ma moyenne sur Ahri : "), "{texte}");
         assert!(texte.contains("CS/min +20 %"), "{texte}");
         assert!(texte.contains("```\nCombat"), "{texte}");

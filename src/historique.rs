@@ -810,6 +810,7 @@ pub fn synchroniser(
         }
         match source.partie(id) {
             Ok(json) => {
+                noter_riot_id(dossier, puuid, &json);
                 if let Some(r) = ResumePartie::depuis_match(&json, puuid) {
                     nouvelles.push(r.id.clone());
                     h.ajouter(r);
@@ -823,17 +824,46 @@ pub fn synchroniser(
             }
         }
     }
-    // Rattrapage des métriques des parties d'avant la v2 (Faille seulement, les plus
-    // récentes d'abord, `RATTRAPAGE_MAX` au plus) : 1 requête par partie.
-    if erreur.is_none() {
-        erreur = rattraper_metriques(source, &mut h, dossier, puuid, pause, !nouvelles.is_empty()).err();
-    }
     // Le rang APRÈS les parties : les LP de la dernière partie s'inscrivent dessus.
+    // (Avant le rattrapage : les LP doivent être notés au plus près de la fin de partie.)
     if erreur.is_none() && (toujours_le_rang || !nouvelles.is_empty()) {
         erreur = noter_rangs(source, &mut h, puuid, maintenant).err();
     }
     let _ = h.sauver(dossier, puuid);
+    // Rattrapage des métriques des parties d'avant la v2 (Faille seulement, les plus
+    // récentes d'abord, `RATTRAPAGE_MAX` au plus) : 1 requête par partie. C'est un
+    // bonus : s'il échoue (réseau...), le reste de la synchro est déjà fait et sauvé,
+    // et son erreur ne bloque rien (juste notée au journal, reprise la fois suivante).
+    if erreur.is_none() {
+        if let Err(e) = rattraper_metriques(source, &mut h, dossier, puuid, pause, !nouvelles.is_empty()) {
+            log!("Historique : rattrapage des métriques interrompu ({e}), repris à la prochaine synchro.");
+        }
+    }
     ResultatSynchro { historique: h, nouvelles, erreur }
+}
+
+/// Mon Riot ID (« Pseudo#TAG ») tel qu'il apparaît dans MES parties match-v5
+/// (`riotIdGameName` / `riotIdTagline`) : noté dans `riot-id-<puuid>.txt`, il sert
+/// aux textes à partager, sans requête de plus. Écrit seulement s'il change.
+fn noter_riot_id(dossier: &Path, puuid: &str, partie: &Value) {
+    let Some(moi) = partie["info"]["participants"].as_array().and_then(|v| v.iter().find(|p| p["puuid"] == puuid))
+    else {
+        return;
+    };
+    let (Some(nom), Some(tag)) = (moi["riotIdGameName"].as_str(), moi["riotIdTagline"].as_str()) else { return };
+    if nom.is_empty() {
+        return;
+    }
+    let riot_id = format!("{nom}#{tag}");
+    if riot_id_local(dossier, puuid).as_deref() != Some(riot_id.as_str()) {
+        let _ = std::fs::write(dossier.join(format!("riot-id-{}.txt", nom_compte(puuid))), riot_id);
+    }
+}
+
+/// Mon Riot ID d'après la base locale (None si aucune partie ne l'a encore donné).
+pub fn riot_id_local(dossier: &Path, puuid: &str) -> Option<String> {
+    let texte = std::fs::read_to_string(dossier.join(format!("riot-id-{}.txt", nom_compte(puuid)))).ok()?;
+    Some(texte.trim().to_string()).filter(|t| !t.is_empty())
 }
 
 /// Re-télécharge les parties sans métriques (voir `RATTRAPAGE_MAX`). Une partie
@@ -861,7 +891,10 @@ fn rattraper_metriques(
             std::thread::sleep(pause);
         }
         let metriques = match source.partie(id) {
-            Ok(json) => ResumePartie::depuis_match(&json, puuid).and_then(|r| r.metriques),
+            Ok(json) => {
+                noter_riot_id(dossier, puuid, &json);
+                ResumePartie::depuis_match(&json, puuid).and_then(|r| r.metriques)
+            }
             Err(ErreurApi::Introuvable) => None,
             Err(e) => return Err(e),
         };
@@ -1133,7 +1166,7 @@ mod tests {
                     {"puuid": MOI, "championId": champion, "teamPosition": "MIDDLE", "win": victoire,
                      "kills": k, "deaths": d, "assists": a, "totalMinionsKilled": 200, "neutralMinionsKilled": 10,
                      "totalDamageDealtToChampions": 25000, "visionScore": 30, "goldEarned": 12000,
-                     "gameEndedInEarlySurrender": false}
+                     "gameEndedInEarlySurrender": false, "riotIdGameName": "Moi Même", "riotIdTagline": "EUW"}
                 ]
             }
         })
@@ -1369,6 +1402,8 @@ mod tests {
         assert!(r.erreur.is_none());
         assert_eq!(r.nouvelles.len(), 2);
         assert_eq!(*source.appels.borrow(), 4); // ids + 2 parties + rang
+        // Mon Riot ID, lu dans mes parties (0 requête de plus).
+        assert_eq!(riot_id_local(&dossier, MOI).as_deref(), Some("Moi Même#EUW"));
         // Une partie classée de plus, gagnée +18 LP.
         source.parties.push(match_json("EUW1_3", 20_000, 420, 103, true, (9, 1, 4)));
         source.rangs = rangs_json(68, 11, 10);
@@ -1437,7 +1472,6 @@ mod tests {
 
     #[test]
     fn coupure_reseau_puis_reprise_sans_doublon_et_partie_404() {
-
         let dossier = dossier_test("reprise");
         let source = FausseSource {
             parties: (1..=4u64).map(|i| match_json(&format!("EUW1_{i}"), i * 1_000, 420, 103, true, (1, 1, 1))).collect(),

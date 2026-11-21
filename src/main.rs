@@ -16,7 +16,6 @@
 //   historique.rs  mes parties, stats perso, LP, récap (base locale TSV)
 //   metriques.rs   métriques détaillées des parties, références par palier et rôle
 //   fiche.rs       fiche joueur (radar, MMR estimé, style) et textes Discord
-
 //   stockage.rs    dossier %APPDATA%\stat-traque (clé, réglages, cache)
 //   http.rs        clients HTTP partagés
 //   tray.rs        icône Windows

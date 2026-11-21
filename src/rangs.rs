@@ -410,7 +410,6 @@ pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, session: u32, tx: Se
         crate::fiche::autoriser(joueurs.iter().map(|(p, n, c, _, _)| (p.clone(), n.clone(), *c)).collect());
         let file = file_spectator(&partie);
         FILE_PARTIE.store(file.unwrap_or(0), Ordering::SeqCst);
-
         let resultats = infos_paralleles(&api, &joueurs, true, file);
         // Groupes (duos / premades) à partir des parties récentes en commun.
         let entrees: Vec<(bool, &[String])> = resultats.iter().map(|(j, ids)| (j.bleu, ids.as_slice())).collect();

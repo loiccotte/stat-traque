@@ -841,7 +841,6 @@ pub fn patch_court(version: &str) -> String {
 /// On lit des OCTETS puis on vérifie l'UTF-8 ligne par ligne : un octet abîmé ne
 /// fait sauter que sa ligne, pas tout le fichier.
 pub(crate) fn lire_lignes(chemin: &Path, mut f: impl FnMut(&str)) -> Option<()> {
-
     let mut lecteur = std::io::BufReader::new(std::fs::File::open(chemin).ok()?);
     let mut octets: Vec<u8> = Vec::new();
     loop {
@@ -1271,7 +1270,6 @@ mod tests {
 
     #[test]
     fn roles_tapes_par_l_utilisateur() {
-
         assert_eq!(role_depuis_texte("MID"), Some("middle"));
         assert_eq!(role_depuis_texte("adc"), Some("bottom"));
         assert_eq!(role_depuis_texte("support"), Some("utility"));

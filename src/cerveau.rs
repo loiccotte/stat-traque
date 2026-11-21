@@ -200,16 +200,17 @@ fn suivre_si_utile(etat: &mut Etat, tx: &Sender<Evenement>) {
 /// Fiche joueur à la demande (F44). Conformité Riot : seulement moi, ou un joueur
 /// de ma partie en cours connu par spectator-v5 (jamais un pseudo caché de champ select).
 fn demander_fiche(etat: &Etat, puuid: &str, tx: &Sender<Evenement>) {
-    let Some(api) = &etat.api else {
-        log!("Fiche : pas de clé API.");
-        return;
-    };
     let patch = crate::fiche::patch_de(etat.donnees.as_deref());
     if etat.mon_puuid.as_deref() == Some(puuid) {
-        crate::fiche::lancer(api.clone(), puuid.to_string(), "Moi".into(), true, patch, tx.clone());
+        // Ma fiche : base locale, 0 requête -> marche aussi sans clé API.
+        crate::fiche::lancer(etat.api.clone(), puuid.to_string(), "Moi".into(), true, patch, tx.clone());
     } else if let Some(nom) = crate::fiche::nom_autorise(puuid) {
+        if etat.api.is_none() {
+            log!("Fiche de {nom} : pas de clé API (stat-traque cle RGAPI-xxxx).");
+            return;
+        }
         log!("Fiche de {nom} demandée (11 requêtes au plus)...");
-        crate::fiche::lancer(api.clone(), puuid.to_string(), nom, false, patch, tx.clone());
+        crate::fiche::lancer(etat.api.clone(), puuid.to_string(), nom, false, patch, tx.clone());
     } else {
         log!("Fiche refusée : joueur inconnu (seulement les joueurs de ta partie en cours).");
     }
@@ -252,7 +253,6 @@ fn changer_compte(etat: &mut Etat, puuid: Box<str>, summoner_id: Option<u64>, tx
             e.partie = None;
             e.fiche = None;
         });
-
     }
     // Premier compte vu : rien à oublier (le champ select en cours reste valable).
     // Nouveau compte (ou premier) : synchro de son historique en arrière-plan.

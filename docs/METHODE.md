@@ -104,6 +104,9 @@ résumé compact des parties au lieu du JSON match-v5 brut (T19).
 Fichier de stats : lignes `R` (palier, rôle, mesure, n, somme, somme des carrés), au plus
 8 × 5 × 26 = 1 040 lignes (~50 Ko). Lues en flux, filtrées : le champ select ne les garde pas en RAM.
 Historique : ~200 octets par partie (au lieu de ~100) avec les 22 colonnes de métriques.
+Revue : challenge absent = inconnu (pas 0) ; compteurs par partie ramenés à 30 min ; encaissés / (morts + 1) ;
+MMR arrondi à 25 LP, confiance plafonnée à « moyenne » ; coût de la fiche mesuré par fil (ses requêtes seulement) ;
+ma fiche sans clé API ; mon Riot ID lu dans mes parties (0 requête) ; rattrapage après le rang, non bloquant.
 
 ## Décisions ouvertes
 

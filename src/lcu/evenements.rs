@@ -156,7 +156,8 @@ fn etat_initial(lcu: &Lcu, tx: &Sender<Evenement>) -> Option<CleChampSelect> {
     if let Some(moi) = lcu.get("/lol-summoner/v1/current-summoner") {
         noter_get("/lol-summoner/v1/current-summoner", &moi);
         if let Some(puuid) = moi["puuid"].as_str().filter(|p| !p.is_empty()) {
-            let _ = tx.send(Evenement::Moi { puuid: puuid.into() });
+            let summoner_id = moi["summonerId"].as_u64().filter(|&id| id != 0);
+            let _ = tx.send(Evenement::Moi { puuid: puuid.into(), summoner_id });
         }
     }
     let phase = lcu
@@ -257,7 +258,8 @@ pub fn traduire(v: &Value) -> Option<Evenement> {
         // Compte connecté (nouveau compte, ou joueur chargé après notre connexion).
         "/lol-summoner/v1/current-summoner" if charge["eventType"] != "Delete" => {
             let puuid = charge["data"]["puuid"].as_str().filter(|p| !p.is_empty())?;
-            Some(Evenement::Moi { puuid: puuid.into() })
+            let summoner_id = charge["data"]["summonerId"].as_u64().filter(|&id| id != 0);
+            Some(Evenement::Moi { puuid: puuid.into(), summoner_id })
         }
 
         _ => None,
@@ -358,8 +360,11 @@ mod tests {
 
     #[test]
     fn traduit_le_compte_connecte() {
-        let msg = r#"[8,"x",{"eventType":"Update","uri":"/lol-summoner/v1/current-summoner","data":{"puuid":"abc"}}]"#;
-        assert!(matches!(traduire(&v(msg)), Some(Evenement::Moi { puuid }) if &*puuid == "abc"));
+        let msg = r#"[8,"x",{"eventType":"Update","uri":"/lol-summoner/v1/current-summoner","data":{"puuid":"abc","summonerId":42}}]"#;
+        assert!(matches!(traduire(&v(msg)), Some(Evenement::Moi { puuid, summoner_id: Some(42) }) if &*puuid == "abc"));
+        // summonerId absent ou 0 (anonymisé) -> None.
+        let sans = r#"[8,"x",{"eventType":"Update","uri":"/lol-summoner/v1/current-summoner","data":{"puuid":"abc","summonerId":0}}]"#;
+        assert!(matches!(traduire(&v(sans)), Some(Evenement::Moi { summoner_id: None, .. })));
         // Joueur pas encore chargé : puuid vide -> rien.
         let vide = r#"[8,"x",{"eventType":"Update","uri":"/lol-summoner/v1/current-summoner","data":{"puuid":""}}]"#;
         assert!(traduire(&v(vide)).is_none());

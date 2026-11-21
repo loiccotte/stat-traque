@@ -24,7 +24,9 @@ pub fn evenements(contenu: &str) -> Vec<Evenement> {
                 Some("/lol-gameflow/v1/gameflow-phase") => v["data"].as_str().map(|p| Evenement::Phase(Phase::depuis_texte(p))),
                 Some("/lol-champ-select/v1/session") => lire_champ_select(&v["data"]),
                 Some("/lol-summoner/v1/current-summoner") => {
-                    v["data"]["puuid"].as_str().map(|p| Evenement::Moi { puuid: p.into() })
+                    // summonerId anonymisé (0) dans les enregistrements -> None.
+                    let summoner_id = v["data"]["summonerId"].as_u64().filter(|&id| id != 0);
+                    v["data"]["puuid"].as_str().map(|p| Evenement::Moi { puuid: p.into(), summoner_id })
                 }
                 _ => None,
             },
@@ -92,7 +94,7 @@ mod tests {
         let comptes: Vec<&str> = evs
             .iter()
             .filter_map(|e| match e {
-                Evenement::Moi { puuid } => Some(&**puuid),
+                Evenement::Moi { puuid, .. } => Some(&**puuid),
                 _ => None,
             })
             .collect();
@@ -116,11 +118,11 @@ mod tests {
             let (tx, rx) = std::sync::mpsc::channel();
             let debut = [
                 Evenement::ClientConnecte(None),
-                Evenement::Moi { puuid: "J-aaaa".into() },
+                Evenement::Moi { puuid: "J-aaaa".into(), summoner_id: Some(1) },
                 Evenement::Rangs { session: 0, joueurs: vec![joueur.clone()] },
                 Evenement::ClientPerdu,
                 Evenement::ClientConnecte(None),
-                Evenement::Moi { puuid: second.into() },
+                Evenement::Moi { puuid: second.into(), summoner_id: Some(2) },
             ];
             for ev in debut.into_iter().chain(fin).chain([Evenement::Quitter]) {
                 tx.send(ev).unwrap();

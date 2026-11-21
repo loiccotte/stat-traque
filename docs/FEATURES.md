@@ -12,13 +12,13 @@ Priorité : P0 indispensable · P1 important · P2 bonus
 | F01 | Détection du champion survolé / verrouillé | ✅ | P0 | instantané via événement, pas de polling | T05 |
 | F02 | Import auto des runes (champion + rôle) | 🔜 | P0 | une seule page "stat-traque", jamais de doublons | T11 |
 | F03 | Sorts d'invocateur auto (Flash côté D/F mémorisé) | 🔜 | P0 | respecte ta touche Flash habituelle | T12 |
-| F04 | Item sets : départ, core, situationnels | 🔜 | P1 | fichier natif du client, rien en overlay | T13 |
+| F04 | Item sets : core, bottes, situationnels (objets de fin de partie match-v5) | ✅ | P1 | un seul set « stat-traque <champion> » dans le client, remplacé (jamais de doublon), `objets=non` pour désactiver | T13 |
 | F05 | Détection du rôle assigné | ✅ | P0 | — | T09 |
-| F06 | Ordre de compétences | 🔜 | P1 | — | T14 |
+| F06 | Ordre de compétences (piste : timeline-v5 à la collecte, +1 requête par partie ; donnerait aussi l'objet de départ) | 🔜 | P1 | — | T14 |
 | F07 | Builds perso sauvegardés, prioritaires sur l'auto | 🔜 | P1 | Blitz écrase tes pages | T10 |
 | F08 | Mode « proposer » : rien n'est appliqué sans 1 clic | 🔜 | P1 | contrôle total | T14 |
-| F09 | Contre-picks / matchup de lane | 💡 | P2 | — | T10 |
-| F10 | Tier list par rôle et par patch | 💡 | P2 | — | T10 |
+| F09 | Contre-picks / matchup de lane (adversaire probable d'après les rôles habituels des ennemis visibles) | ✅ | P2 | lecture filtrée : seules les lignes des champions visibles sont lues (quelques dizaines de Ko) | T10 |
+| F10 | Tier list par rôle et par patch : winrate, pick rate, ban rate, score lissé (`stat-traque tierlist [role]`) | ✅ | P2 | calculée en flux, ~40 Ko gardés | T10 |
 | F11 | Acceptation auto de la partie (option `accepter=oui`) | ✅ | P2 | désactivée par défaut, dans le client seulement (avant la partie) | T09 |
 
 ## 2. Chargement et partie en cours

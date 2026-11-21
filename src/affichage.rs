@@ -50,6 +50,76 @@ pub struct VueChampSelect {
     /// (nom du champion, raison)
     pub picks_conseilles: Vec<(String, String)>,
     pub runes: Option<VueRunes>,
+    // --- Stats étendues (feature/stats-etendues) ---
+    /// Adversaire PROBABLE de ma lane (nom) : déduit des rôles habituels des
+    /// ennemis visibles, le client ne donne pas leurs rôles.
+    pub adversaire_lane: Option<String>,
+    /// Mon champion contre cet adversaire (None = pas assez de parties).
+    pub matchup: Option<VueMatchup>,
+    /// Avant le verrouillage : champions de mon rôle qui gagnent le plus contre lui.
+    pub contre_picks: Vec<VueMatchup>,
+    /// Meilleurs / pires adversaires de mon champion à mon rôle.
+    pub meilleurs_matchups: Vec<VueMatchup>,
+    pub pires_matchups: Vec<VueMatchup>,
+    /// Objets conseillés (rempli au verrouillage).
+    pub objets: Option<VueObjets>,
+}
+
+/// Un duel de lane, vu de MON côté.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VueMatchup {
+    /// L'autre champion : l'adversaire, ou le champion conseillé (contre-picks).
+    pub champion: String,
+    /// Winrate de mon côté (pour un contre-pick : celui du champion conseillé).
+    pub winrate: f32,
+    pub parties: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VueObjet {
+    pub id: u32,
+    pub nom: String,
+    /// % des parties où l'objet est présent en fin de partie.
+    pub frequence: f32,
+    pub winrate: f32,
+    pub parties: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VueObjets {
+    /// Les 3 légendaires les plus construits.
+    pub core: Vec<VueObjet>,
+    pub bottes: Vec<VueObjet>,
+    pub situationnels: Vec<VueObjet>,
+    /// Parties analysées pour ce champion.
+    pub parties: u32,
+    /// Rôle des stats, None = tous rôles confondus.
+    pub role: Option<String>,
+    /// true quand l'item set « stat-traque <champion> » est enregistré dans le client.
+    pub item_set_applique: bool,
+}
+
+/// Une ligne de la tier list.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VueTier {
+    pub id: u16,
+    pub champion: String,
+    /// "top", "jungle", "middle", "bottom", "utility".
+    pub role: &'static str,
+    pub winrate: f32,
+    pub pick_rate: f32,
+    pub ban_rate: f32,
+    /// Winrate lissé (sert au tri).
+    pub score: f32,
+    pub parties: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VueTierList {
+    pub patch: String,
+    pub parties: u32,
+    /// Triées par rôle puis par score décroissant.
+    pub lignes: Vec<VueTier>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -61,6 +131,8 @@ pub struct EtatAffichage {
     pub rangs: Vec<InfoJoueur>,
     pub partie: Option<InstantanePartie>,
     pub messages: Vec<String>,
+    /// Tier list du patch (tous rôles), calculée une fois au démarrage.
+    pub tier_list: Option<VueTierList>,
     // --- Historique et stats perso (feature/historique, voir historique.rs) ---
     /// Mes 20 dernières parties, plus récentes d'abord (champion = id : nom via Data Dragon).
     pub historique: Vec<crate::historique::ResumePartie>,

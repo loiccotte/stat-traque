@@ -16,6 +16,11 @@ pub fn pourcent(x: f32) -> String {
     format!("{}\u{a0}%", decimal(x, 1))
 }
 
+/// Nombre avec `d` décimales ; sans décimale, groupé par milliers (`23400` -> `"23 400"`).
+pub fn nombre(x: f32, d: usize) -> String {
+    if d == 0 { milliers(x.max(0.0).round() as u32) } else { decimal(x, d) }
+}
+
 /// Grands nombres lisibles : `3400` -> `"3 400"`.
 pub fn milliers(n: u32) -> String {
     let chiffres = n.to_string();
@@ -254,6 +259,8 @@ mod tests {
         assert_eq!(milliers(999), "999");
         assert_eq!(milliers(1_234_567), "1\u{a0}234\u{a0}567");
         assert_eq!(milliers(0), "0");
+        assert_eq!(nombre(23_400.4, 0), "23\u{a0}400");
+        assert_eq!(nombre(3.94, 1), "3,9");
     }
 
     #[test]

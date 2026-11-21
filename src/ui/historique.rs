@@ -71,8 +71,8 @@ fn dessiner_recap(ui: &mut Ui, r: &Recap, donnees: Option<&DonneesJeu>) {
             for l in &r.lignes {
                 let d = l.decimales as usize;
                 ui.label(RichText::new(l.libelle).color(theme::TEXTE_DOUX));
-                ui.label(RichText::new(format::decimal(l.valeur, d)).strong());
-                ui.label(l.moyenne.map_or("—".into(), |m| format::decimal(m, d)));
+                ui.label(RichText::new(format::nombre(l.valeur, d)).strong());
+                ui.label(l.moyenne.map_or("—".into(), |m| format::nombre(m, d)));
                 let couleur = match l.ecart_pct {
                     Some(e) if e >= 5.0 => theme::VERT,
                     Some(e) if e <= -5.0 => theme::EQUIPE_ROUGE,

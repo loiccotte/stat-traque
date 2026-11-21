@@ -162,7 +162,7 @@ fn historique() -> Historique {
     for i in 0..12u32 {
         h.ajouter(ResumePartie {
             id: format!("EUW1_{}", 7_000_000 + i).into(),
-            date: 1_763_700_000 - i as u64 * 7200,
+            date: crate::ui::format::maintenant().saturating_sub(1800 + i as u64 * 7200),
             file: if i % 4 == 3 { 450 } else { 420 },
             champion: if i % 3 == 2 { 103 } else { 238 },
             role: (i % 4 != 3).then_some("middle"),

@@ -43,13 +43,18 @@ pub use fenetre::{attendre_fermeture, basculer_overlay, demarrer, fermer, ouvrir
 #[cfg(any(windows, target_os = "linux"))]
 pub use mesure::essai;
 
-/// Ouvre la fenêtre avec les données de démonstration et attend qu'on la ferme
-/// (commande `stat-traque essai-fenetre voir`).
+/// Ouvre la fenêtre (ou l'overlay) avec les données de démonstration et attend
+/// qu'on la ferme (commandes `stat-traque essai-fenetre voir` / `overlay`).
+/// L'overlay n'a pas de croix : on l'arrête avec Ctrl+C dans la console.
 #[cfg(any(windows, target_os = "linux"))]
-pub fn apercu() {
+pub fn apercu(overlay: bool) {
     demarrer();
     crate::affichage::modifier(|e| *e = demo::etat(crate::gameflow::Phase::InProgress));
-    ouvrir();
+    if overlay {
+        basculer_overlay();
+    } else {
+        ouvrir();
+    }
     attendre_fermeture();
 }
 
@@ -61,7 +66,7 @@ mod sans_interface {
     pub fn fermer() {}
     pub fn basculer_overlay() {}
     pub fn attendre_fermeture() {}
-    pub fn apercu() {}
+    pub fn apercu(_overlay: bool) {}
     pub fn essai() {}
 }
 #[cfg(not(any(windows, target_os = "linux")))]

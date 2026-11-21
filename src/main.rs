@@ -64,6 +64,7 @@ const AIDE: &str = "stat-traque — alternative légère à Blitz
   stat-traque --rejouer f.jsonl --fenetre   idem, puis affiche le résultat dans la fenêtre
   stat-traque essai-fenetre      mesure RAM / CPU : fenêtre ouverte, fermée, overlay
   stat-traque essai-fenetre voir ouvre la fenêtre avec des données de démonstration
+  stat-traque essai-fenetre overlay  affiche l'overlay de démonstration (Ctrl+C pour arrêter)
   stat-traque collecter 30       collecte 30 min de parties Master+ (stats de runes)
   stat-traque tierlist [role]    tier list du patch (top, jungle, mid, adc, support)
   stat-traque historique         mes parties, stats perso et LP (base locale, hors ligne)
@@ -85,7 +86,11 @@ fn main() {
             tray::ouvrir_console();
             return ui::essai();
         }
-        ["essai-fenetre", "voir"] => return ui::apercu(),
+        ["essai-fenetre", "voir"] => return ui::apercu(false),
+        ["essai-fenetre", "overlay"] => {
+            tray::ouvrir_console();
+            return ui::apercu(true);
+        }
         ["historique"] => {
             tray::ouvrir_console();
             return historique::commande();

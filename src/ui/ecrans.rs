@@ -62,7 +62,9 @@ pub fn dessiner(ui: &mut Ui, ecran: &mut Ecran, etat: &EtatAffichage) {
                 ui.label(RichText::new("stat-traque").color(theme::OR).strong().size(18.0));
                 ui.add_space(12.0);
                 let couleur = if etat.client_connecte { theme::VERT } else { theme::TEXTE_DOUX };
-                ui.colored_label(couleur, "●");
+                // Pastille de couleur (dessinée : la police par défaut n'a pas le caractère ●).
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 4.0, couleur);
                 ui.label(RichText::new(format::statut(etat.client_connecte, etat.phase, etat.cle_api)).color(theme::TEXTE_DOUX));
             });
             ui.add_space(4.0);
@@ -209,7 +211,7 @@ fn dessiner_equipe(
             ui.label(RichText::new(format::moment_fort(a.courbe)).color(theme::OR));
         });
         for alerte in &a.alertes {
-            ui.label(RichText::new(format!("⚠ {alerte}")).color(theme::ALERTE));
+            ui.label(RichText::new(format!("! {alerte}")).color(theme::ALERTE));
         }
         if !a.roles.is_empty() {
             ui.add_space(2.0);

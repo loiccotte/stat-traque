@@ -55,6 +55,8 @@ pub fn onglet_conseille(phase: Option<Phase>) -> Option<Onglet> {
     match phase? {
         Phase::ChampSelect => Some(Onglet::ChampSelect),
         p if p.en_partie() => Some(Onglet::Partie),
+        // Fin de partie : le récap (comparé à ma moyenne) est dans l'historique.
+        Phase::WaitingForStats | Phase::PreEndOfGame | Phase::EndOfGame => Some(Onglet::Historique),
         _ => None,
     }
 }
@@ -67,6 +69,7 @@ mod tests {
     fn onglet_selon_la_phase() {
         assert_eq!(onglet_conseille(Some(Phase::ChampSelect)), Some(Onglet::ChampSelect));
         assert_eq!(onglet_conseille(Some(Phase::InProgress)), Some(Onglet::Partie));
+        assert_eq!(onglet_conseille(Some(Phase::EndOfGame)), Some(Onglet::Historique));
         assert_eq!(onglet_conseille(Some(Phase::Lobby)), None);
         assert_eq!(onglet_conseille(None), None);
         assert!(Onglet::TOUS.iter().all(|o| !o.libelle().is_empty()));

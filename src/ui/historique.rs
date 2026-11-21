@@ -198,7 +198,7 @@ fn dessiner_parties(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJ
                 ui.label(RichText::new(e).color(theme::TEXTE_DOUX).small());
             }
             ui.end_row();
-            for p in &etat.historique {
+            for p in etat.historique.iter() {
                 ui.label(RichText::new(format::il_y_a(maintenant, p.date)).color(theme::TEXTE_DOUX));
                 ui.label(nom_file(p.file));
                 ui.label(RichText::new(format::nom_champion(donnees, p.champion)).strong());

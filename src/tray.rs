@@ -4,7 +4,8 @@
 //! coût quasi nul en RAM et en taille d'exe. Une fenêtre INVISIBLE reçoit
 //! les clics sur l'icône : clic gauche = ouvrir la fenêtre (ui/), clic droit =
 //! petit menu (état, Ouvrir, Overlay, Quitter). Pendant la partie seulement, le
-//! raccourci global Ctrl+Maj+Tab affiche / masque l'overlay.
+//! raccourci global Ctrl+Maj+Tab affiche / masque l'overlay. L'overlay lui-même
+//! (fenêtre native GDI, ui/overlay_natif.rs) vit aussi dans ce thread.
 //!
 //! Hors Windows (développement sous Linux) : fonctions vides.
 
@@ -27,6 +28,8 @@ mod windows_impl {
     const MSG_ICONE: u32 = WM_APP + 1; // clic sur l'icône
     const MSG_ETAT: u32 = WM_APP + 2; // l'état a changé -> mettre à jour l'infobulle
     const MSG_RACCOURCI: u32 = WM_APP + 3; // (dés)activer le raccourci de l'overlay
+    const MSG_OVERLAY: u32 = WM_APP + 4; // afficher (wparam = 1) / masquer l'overlay
+    const MSG_OVERLAY_MAJ: u32 = WM_APP + 5; // l'état a changé : redessiner l'overlay
     const ID_QUITTER: usize = 1;
     const ID_OUVRIR: usize = 2;
     const ID_OVERLAY: usize = 3;
@@ -100,6 +103,14 @@ mod windows_impl {
                 activer_raccourci(fenetre, wparam != 0);
                 0
             }
+            MSG_OVERLAY => {
+                crate::ui::overlay_natif::afficher(wparam != 0);
+                0
+            }
+            MSG_OVERLAY_MAJ => {
+                crate::ui::overlay_natif::redessiner();
+                0
+            }
             WM_HOTKEY if wparam as i32 == ID_RACCOURCI => {
                 crate::ui::basculer_overlay();
                 0
@@ -124,7 +135,9 @@ mod windows_impl {
         AppendMenuW(menu, MF_SEPARATOR, 0, null_mut());
         AppendMenuW(menu, MF_STRING, ID_OUVRIR, ouvrir.as_ptr());
         SetMenuDefaultItem(menu, ID_OUVRIR as u32, 0); // en gras : c'est le clic gauche
-        AppendMenuW(menu, MF_STRING, ID_OVERLAY, overlay.as_ptr());
+        // L'overlay n'a de sens que pendant la partie : grisé sinon.
+        let en_partie = crate::affichage::phase().is_some_and(crate::gameflow::Phase::en_partie);
+        AppendMenuW(menu, if en_partie { MF_STRING } else { MF_STRING | MF_GRAYED }, ID_OVERLAY, overlay.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, null_mut());
         AppendMenuW(menu, MF_STRING, ID_QUITTER, quitter.as_ptr());
         let mut p = POINT { x: 0, y: 0 };
@@ -137,14 +150,15 @@ mod windows_impl {
         match choix as usize {
             ID_OUVRIR => crate::ui::ouvrir(),
             ID_OVERLAY => crate::ui::basculer_overlay(),
-            _ => {}
-        }
-        if choix as usize == ID_QUITTER {
-            if let Some(tx) = TX.get() {
-                let _ = tx.send(Evenement::Quitter);
+            ID_QUITTER => {
+                if let Some(tx) = TX.get() {
+                    let _ = tx.send(Evenement::Quitter);
+                }
+                crate::ui::overlay_natif::afficher(false);
+                Shell_NotifyIconW(NIM_DELETE, &donnees_icone(fenetre));
+                PostQuitMessage(0); // main.rs ferme ensuite la fenêtre (processus enfant)
             }
-            Shell_NotifyIconW(NIM_DELETE, &donnees_icone(fenetre));
-            PostQuitMessage(0);
+            _ => {}
         }
     }
 
@@ -169,6 +183,11 @@ mod windows_impl {
                 null_mut(), null_mut(), instance, null_mut(),
             );
             FENETRE.store(fenetre, Ordering::Release);
+            // Lancé pendant une partie ? Le raccourci doit marcher tout de suite
+            // (le changement de phase a pu arriver avant que cette fenêtre existe).
+            if crate::affichage::phase().is_some_and(crate::gameflow::Phase::en_partie) {
+                activer_raccourci(fenetre, true);
+            }
 
             ajouter_icone(fenetre);
 
@@ -189,7 +208,10 @@ mod windows_impl {
         if actif {
             // Échec possible si une autre application a déjà pris ce raccourci :
             // le menu de l'icône permet toujours d'afficher l'overlay.
-            RegisterHotKey(fenetre, ID_RACCOURCI, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_TAB as u32);
+            let ok = RegisterHotKey(fenetre, ID_RACCOURCI, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_TAB as u32);
+            if ok == 0 {
+                crate::log!("Raccourci Ctrl+Maj+Tab déjà pris par une autre application : overlay par le menu de l'icône.");
+            }
         } else {
             UnregisterHotKey(fenetre, ID_RACCOURCI);
         }
@@ -201,6 +223,24 @@ mod windows_impl {
         let fenetre = FENETRE.load(Ordering::Acquire);
         if !fenetre.is_null() {
             unsafe { PostMessageW(fenetre, MSG_RACCOURCI, actif as usize, 0) };
+        }
+    }
+
+    /// Affiche / masque l'overlay natif. N'importe quel thread : on poste un message,
+    /// l'overlay est créé / détruit dans le thread de l'icône.
+    pub fn afficher_overlay(visible: bool) {
+        poster(MSG_OVERLAY, visible as usize);
+    }
+
+    /// Redessine l'overlay (s'il est affiché). N'importe quel thread.
+    pub fn redessiner_overlay() {
+        poster(MSG_OVERLAY_MAJ, 0);
+    }
+
+    fn poster(msg: u32, wparam: usize) {
+        let fenetre = FENETRE.load(Ordering::Acquire);
+        if !fenetre.is_null() {
+            unsafe { PostMessageW(fenetre, msg, wparam, 0) };
         }
     }
 
@@ -257,7 +297,8 @@ mod windows_impl {
 
 #[cfg(windows)]
 pub use windows_impl::{
-    definir_etat, instance_unique, lancer, nouvelle_console, ouvrir_console, raccourci_overlay, sans_boites_erreur_disque,
+    afficher_overlay, definir_etat, instance_unique, lancer, nouvelle_console, ouvrir_console, raccourci_overlay,
+    redessiner_overlay, sans_boites_erreur_disque,
 };
 
 #[cfg(not(windows))]

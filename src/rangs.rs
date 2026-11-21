@@ -39,7 +39,7 @@ const PALIERS: [&str; 10] = [
     "IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Rang {
     pub palier: Box<str>,
     /// "I" à "IV" (vide pour Master et plus).
@@ -95,7 +95,7 @@ impl std::fmt::Display for Rang {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InfoJoueur {
     pub nom: Box<str>,
     pub champion: u16,
@@ -124,7 +124,7 @@ const PARTIES_GROUPE: u8 = 20;
 const SERIE_MIN: i32 = 3;
 
 /// Petit indice affiché à côté d'un joueur.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Badge {
     Main,
     PremiereFois,

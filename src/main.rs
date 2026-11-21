@@ -47,6 +47,7 @@ mod rangs;
 mod rejeu;
 mod stats;
 mod riot_api;
+mod serde_statique;
 mod stockage;
 mod tray;
 mod ui;
@@ -78,6 +79,10 @@ fn main() {
 
     // Commandes ponctuelles : on fait la chose et on s'arrête.
     match args.as_slice() {
+        // Processus de la fenêtre, lancé par stat-traque lui-même (ui/parent.rs) :
+        // AVANT le verrou d'instance unique et l'icône (ce n'est pas une 2e instance).
+        ["--fenetre"] => return ui::processus_fenetre(false),
+        ["--fenetre", "overlay"] => return ui::processus_fenetre(true),
         ["cle", cle] => return commande_cle(cle),
         ["region", r] => return commande_region(r),
         ["--rejouer", fichier] => return commande_rejouer(fichier, false),
@@ -148,7 +153,7 @@ fn main() {
         cerveau::boucle(rx, tx, cerveau::Mode::Console);
     } else {
         // Thread de la fenêtre : il dort jusqu'au premier clic sur l'icône.
-        ui::demarrer();
+        ui::demarrer(Some(tx.clone()));
         // Windows : la fenêtre de l'icône doit tourner sur le thread principal.
         let tx_cerveau = tx.clone();
         std::thread::Builder::new()
@@ -156,6 +161,8 @@ fn main() {
             .spawn(move || cerveau::boucle(rx, tx_cerveau, cerveau::Mode::Tray))
             .expect("impossible de lancer le cerveau");
         tray::lancer(tx); // revient quand on clique sur "Quitter"
+        // Fermer proprement la fenêtre (processus enfant), sans attendre plus de 0,5 s.
+        ui::fermer_et_attendre(std::time::Duration::from_millis(500));
     }
 }
 
@@ -163,7 +170,7 @@ fn main() {
 fn commande_rejouer(fichier: &str, fenetre: bool) {
     tray::ouvrir_console();
     if fenetre {
-        ui::demarrer(); // avant le rejeu : la fenêtre suit les phases rejouées
+        ui::demarrer(None); // avant le rejeu : la fenêtre suit les phases rejouées
     }
     let (tx, rx) = mpsc::channel();
     if let Some(d) = ddragon::charger() {

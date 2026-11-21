@@ -204,6 +204,58 @@ pub fn position_overlay(texte: Option<&str>) -> [f32; 2] {
     }
 }
 
+/// Une case de l'overlay : texte + couleur (rouge, vert, bleu).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cellule {
+    pub texte: String,
+    pub couleur: [u8; 3],
+}
+
+const GRIS: [u8; 3] = [160, 155, 140];
+const OR: [u8; 3] = [200, 170, 110];
+const BLEU: [u8; 3] = [80, 150, 240];
+const ROUGE: [u8; 3] = [232, 64, 87];
+
+/// Les 3 cases d'un joueur : champion, rang court, winrate (nombre de parties).
+fn cellules_joueur(j: &InfoJoueur, donnees: Option<&DonneesJeu>) -> [Cellule; 3] {
+    let couleur_equipe = if j.moi { OR } else if j.bleu { BLEU } else { ROUGE };
+    let (rang, couleur_rang) = match &j.solo {
+        Some(r) => (rang_court(Some(r)), couleur_palier(&r.palier)),
+        None => (rang_court(None), GRIS),
+    };
+    let bilan = j.solo.as_ref().map_or(String::new(), |r| {
+        format!("{} ({})", pourcent_entier(r.winrate()), r.victoires as u32 + r.defaites as u32)
+    });
+    [
+        Cellule { texte: nom_champion(donnees, j.champion), couleur: couleur_equipe },
+        Cellule { texte: rang, couleur: couleur_rang },
+        Cellule { texte: bilan, couleur: GRIS },
+    ]
+}
+
+/// Contenu de l'overlay : une ligne par joueur, équipe bleue à gauche (3 cases),
+/// rouge à droite (3 cases). Sans rangs : une seule ligne de message.
+pub fn grille_overlay(rangs: &[InfoJoueur], donnees: Option<&DonneesJeu>, cle_api: bool) -> Vec<Vec<Cellule>> {
+    if rangs.is_empty() {
+        let texte = if cle_api { "stat-traque : rangs en cours de chargement…" } else { "stat-traque : pas de clé API, rangs indisponibles" };
+        return vec![vec![Cellule { texte: texte.into(), couleur: GRIS }]];
+    }
+    let (bleus, rouges) = par_equipe(rangs);
+    let vide = || Cellule { texte: String::new(), couleur: GRIS };
+    (0..bleus.len().max(rouges.len()))
+        .map(|i| {
+            let mut ligne = Vec::with_capacity(6);
+            for equipe in [&bleus, &rouges] {
+                match equipe.get(i) {
+                    Some(j) => ligne.extend(cellules_joueur(j, donnees)),
+                    None => ligne.extend([vide(), vide(), vide()]),
+                }
+            }
+            ligne
+        })
+        .collect()
+}
+
 /// Date relative : « il y a 5 min », « il y a 3 h », « il y a 2 j ».
 pub fn il_y_a(maintenant: u64, date: u64) -> String {
     let s = maintenant.saturating_sub(date);
@@ -232,6 +284,21 @@ pub fn ecart(ecart_pct: Option<f32>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grille_de_l_overlay() {
+        let e = crate::ui::demo::etat(Phase::InProgress);
+        let g = grille_overlay(&e.rangs, e.donnees.as_deref(), true);
+        assert_eq!(g.len(), 5);
+        assert!(g.iter().all(|l| l.len() == 6));
+        assert_eq!(g[0][0].texte, "Zed");
+        assert_eq!(g[0][0].couleur, OR, "moi en or");
+        assert_eq!(g[0][3].texte, "Ahri");
+        assert_eq!(g[0][1].texte, "E2 40 LP");
+        let vide = grille_overlay(&[], None, false);
+        assert_eq!(vide.len(), 1);
+        assert!(vide[0][0].texte.contains("clé API"));
+    }
+
     #[test]
     fn dates_et_ecarts() {
         assert_eq!(il_y_a(1000, 990), "à l'instant");

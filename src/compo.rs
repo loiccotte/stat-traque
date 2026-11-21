@@ -7,6 +7,7 @@
 //! pointent directement dans le fichier inclus.
 
 use std::collections::HashMap;
+use crate::serde_statique::Texte;
 use std::sync::OnceLock;
 
 const PROFILS: &str = include_str!("../data/profils_champions.tsv");
@@ -81,7 +82,7 @@ pub fn profil(id: &str) -> Option<&'static Profil> {
     table().get(id)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Style {
     Engage,
     Poke,
@@ -104,7 +105,7 @@ impl Style {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AnalyseEquipe {
     pub nombre: usize,
     /// Styles triés du plus fort au plus faible, avec leur score (0 à 3).
@@ -117,7 +118,8 @@ pub struct AnalyseEquipe {
     pub courbe: [f32; 3],
     pub alertes: Vec<String>,
     /// (id du champion, rôle dans la compo).
-    pub roles: Vec<(&'static str, &'static str)>,
+    #[serde(deserialize_with = "crate::serde_statique::paires_textes")]
+    pub roles: Vec<(Texte, Texte)>,
     // Moyennes utiles pour comparer / suggérer.
     moy_allin: f32,
     moy_pick: f32,

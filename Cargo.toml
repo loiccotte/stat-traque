@@ -13,6 +13,10 @@ native-tls = "0.2"
 # au lieu de l'interroger toutes les secondes.
 tungstenite = { version = "0.24", default-features = false, features = ["handshake", "native-tls"] }
 serde_json = "1"
+# serde (déjà tiré par serde_json) + `derive` : l'état d'affichage est envoyé en JSON
+# au processus de la fenêtre (une ligne par changement). `rc` : sérialiser les `Arc`.
+# Coût mesuré : voir docs/METHODE.md (« Mesures T07 »).
+serde = { version = "1", features = ["derive", "rc"] }
 base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]

@@ -25,7 +25,8 @@ const CHAMPIONS: [(u16, &str, &str); 10] = [
     (117, "Lulu", "Lulu"),
 ];
 
-fn donnees() -> DonneesJeu {
+/// Noms de champions et d'objets de la démo.
+pub fn donnees() -> DonneesJeu {
     let mut d = DonneesJeu { version: "15.1.1".into(), ..Default::default() };
     for (id, dd, nom) in CHAMPIONS {
         d.champions.insert(id, Champion { id: dd.into(), nom: nom.into() });
@@ -123,10 +124,10 @@ pub fn etat(phase: Phase) -> EtatAffichage {
         partie: Some(InstantanePartie { mode: "CLASSIC".into(), secondes: 14 * 60 + 7, joueurs }),
         messages: (1..=30).map(|i| format!("Message de démonstration n° {i}")).collect(),
         donnees: Some(Arc::new(donnees())),
-        tier_list: Some(tier_list()),
-        historique: historique.parties.clone(),
-        stats_perso: Some(historique.stats()),
-        progression_lp: Some(progression()),
+        tier_list: Some(Arc::new(tier_list())),
+        historique: Arc::new(historique.parties.clone()),
+        stats_perso: Some(Arc::new(historique.stats())),
+        progression_lp: Some(Arc::new(progression())),
         recap: Some(Recap::calculer(&historique, &historique.parties[0])),
     }
 }

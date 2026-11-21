@@ -138,6 +138,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                 affichage::modifier(|e| e.partie = Some(p));
             }
             Evenement::Historique(maj) => crate::historique::publier(*maj, etat.donnees.as_deref()),
+            Evenement::Fenetre => suivre_si_utile(&mut etat, &tx),
             Evenement::Quitter => break,
         }
     }
@@ -169,19 +170,29 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         }
     }
     scouter_si_besoin(etat, p, tx);
-    // Le suivi de partie (port 2999) ne tourne QUE pendant la partie, et seulement
-    // si quelqu'un s'en sert : la console, l'enregistreur (overlay plus tard).
-    // En rejeu, les instantanés viennent du fichier, pas du jeu.
-    // Tray : la fenêtre peut être ouverte à tout moment pendant la partie (onglet
-    // Partie) -> suivi actif (1 requête locale toutes les 5 s, seulement en partie).
-    let utile = matches!(etat.mode, Mode::Console | Mode::Tray);
-    let vivant = etat.suivi.as_ref().is_some_and(SuiviPartie::vivant);
-    match (p.en_partie() && utile, vivant) {
-        (true, false) => etat.suivi = Some(live::suivre(tx.clone())),
-        (false, _) if !p.en_partie() => etat.suivi = None,
-        _ => {}
-    }
     etat.phase = p;
+    suivre_si_utile(etat, tx);
+}
+
+/// Le suivi de partie (port 2999) ne tourne QUE pendant la partie, et seulement
+/// si quelqu'un s'en sert : la console, l'enregistreur, ou la fenêtre ouverte
+/// (onglet Partie). L'overlay n'en a pas besoin (il montre les rangs).
+/// En rejeu, les instantanés viennent du fichier, pas du jeu.
+/// Rappelée à chaque changement de phase ET quand la fenêtre s'ouvre / se ferme.
+fn suivre_si_utile(etat: &mut Etat, tx: &Sender<Evenement>) {
+    let utile = match etat.mode {
+        Mode::Console => true,
+        Mode::Tray => crate::enregistreur::actif() || crate::ui::fenetre_ouverte(),
+        Mode::Rejeu => false,
+    };
+    let vivant = etat.suivi.as_ref().is_some_and(SuiviPartie::vivant);
+    if etat.phase.en_partie() && utile {
+        if !vivant {
+            etat.suivi = Some(live::suivre(tx.clone()));
+        }
+    } else {
+        etat.suivi = None; // lâcher le suivi arrête son thread
+    }
 }
 
 /// Rangs des 10 joueurs, une fois par partie (il faut connaître mon compte).
@@ -466,7 +477,7 @@ fn preparer_stats_en_fond(d: &Arc<DonneesJeu>) {
         // RAM : ~80 octets par ligne (nom compris).
         log!("Tier list du patch {} : {} lignes ({} parties, ~{:.1} Ko)", t.patch, lignes.len(), t.parties, (lignes.len() * 80) as f32 / 1024.0);
         let vue = affichage::VueTierList { patch: t.patch, parties: t.parties, lignes };
-        affichage::modifier(|e| e.tier_list = Some(vue));
+        affichage::modifier(|e| e.tier_list = Some(std::sync::Arc::new(vue)));
     });
 }
 

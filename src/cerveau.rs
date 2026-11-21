@@ -160,6 +160,9 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         etat.cs = SuiviChampSelect::default();
         etat.partie_scoutee = false;
         crate::rangs::oublier_partie();
+        // Les joueurs de la partie PRÉCÉDENTE ne sont plus « de la partie » : on retire
+        // leur autorisation de fiche (on la garde après la partie pour consulter leur fiche).
+        crate::fiche::autoriser(Vec::new());
         affichage::modifier(|e| {
             e.champ_select = Some(VueChampSelect::default());
             e.rangs.clear();
@@ -246,6 +249,7 @@ fn changer_compte(etat: &mut Etat, puuid: Box<str>, summoner_id: Option<u64>, tx
         }
         // Un compte différent : on oublie ce qui a été fait pour l'ancien.
         log!("Autre compte connecté au client LoL : on repart de zéro.");
+        crate::fiche::autoriser(Vec::new());
         // `wrapping_add` : repasse à 0 après u32::MAX au lieu de planter (jamais atteint en pratique).
         etat.session_compte = etat.session_compte.wrapping_add(1);
         etat.cs = SuiviChampSelect::default();

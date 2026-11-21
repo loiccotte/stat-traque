@@ -15,8 +15,13 @@ $tailleMo = (Get-Item $Exe).Length / 1MB
 if ($tailleMo -ge $budgets.TailleMo) { $horsBudget += "taille" }
 
 # 2) RAM et CPU au repos (client LoL fermé : c'est l'état le plus fréquent)
-$p = Start-Process -FilePath $Exe -PassThru
+# Une seule instance est autorisée : on arrête celles déjà lancées.
+Get-Process stat-traque -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Milliseconds 500
+"Mesure en cours ($Secondes s)..."
+$p = Start-Process -FilePath (Resolve-Path $Exe) -PassThru
 Start-Sleep -Seconds 3
+if ($p.HasExited) { "ERREUR : l'app s'est arrêtée tout de suite (voir %APPDATA%\stat-traque\journal.txt)"; exit 1 }
 $p.Refresh(); $cpu0 = $p.TotalProcessorTime
 Start-Sleep -Seconds $Secondes
 $p.Refresh()

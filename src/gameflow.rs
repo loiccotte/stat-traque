@@ -44,7 +44,8 @@ impl Phase {
     /// Libellé court pour l'icône et le journal.
     pub fn libelle(self) -> &'static str {
         match self {
-            Phase::Aucune | Phase::Autre => "Au repos",
+            Phase::Aucune => "Au repos",
+            Phase::Autre => "Autre",
             Phase::Lobby => "Salon",
             Phase::Matchmaking => "Recherche de partie",
             Phase::ReadyCheck => "Partie trouvée",

@@ -39,7 +39,7 @@ use std::time::Instant;
 const AIDE: &str = "stat-traque — alternative légère à Blitz
 
   stat-traque                    lance l'app (icône dans la barre des tâches)
-  stat-traque --console          lance l'app avec les messages dans la console
+  stat-traque --console          lance l'app dans une console à part (Ctrl+C pour arrêter)
   stat-traque cle RGAPI-xxxx     enregistre ta clé API Riot (stockée en local)
   stat-traque region euw1        change de serveur (euw1, eun1, na1, kr...)
   stat-traque aide               affiche cette aide";
@@ -64,11 +64,14 @@ fn main() {
     // Sous Linux (développement) il n'y a pas d'icône : toujours en mode console.
     let console = args.contains(&"--console") || !cfg!(windows);
     if console {
-        tray::ouvrir_console();
+        tray::nouvelle_console();
     }
     // Deux instances = deux icônes, deux connexions, un journal écrasé : on refuse.
     if !tray::instance_unique() {
-        println!("stat-traque est déjà lancé (icône près de l'horloge).");
+        println!("stat-traque est déjà lancé (icône près de l'horloge). Pour l'arrêter : taskkill /IM stat-traque.exe /F");
+        if console {
+            std::thread::sleep(std::time::Duration::from_secs(5)); // le temps de lire
+        }
         return;
     }
     tray::sans_boites_erreur_disque();

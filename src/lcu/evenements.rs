@@ -112,11 +112,18 @@ fn ouvrir_websocket(lcu: &Lcu) -> Result<Socket, Box<dyn std::error::Error>> {
     // la connexion sans jamais répondre. Ensuite : lecture bloquante sans délai.
     tcp.set_read_timeout(Some(Duration::from_secs(3)))?;
     let connecteur = Connector::NativeTls(crate::http::tls_local());
-    let (mut socket, _) = tungstenite::client_tls_with_config(requete, tcp.try_clone()?, None, Some(connecteur))?;
+    let (mut socket, _) = tungstenite::client_tls_with_config(requete, tcp, None, Some(connecteur))?;
     for sujet in ABONNEMENTS {
         socket.send(Message::text(format!("[5, \"{sujet}\"]")))?;
     }
-    tcp.set_read_timeout(None)?;
+    // On enlève le délai sur la VRAIE socket (sous la couche TLS) : le client peut
+    // rester silencieux des minutes entières, ce n'est pas une déconnexion.
+    use tungstenite::stream::MaybeTlsStream;
+    match socket.get_mut() {
+        MaybeTlsStream::NativeTls(tls) => tls.get_mut().set_read_timeout(None)?,
+        MaybeTlsStream::Plain(tcp) => tcp.set_read_timeout(None)?,
+        _ => {}
+    }
     Ok(socket)
 }
 
@@ -148,7 +155,20 @@ fn ecouter(mut socket: Socket, tx: &Sender<Evenement>, deja_envoye: Option<CleCh
     // Le client renvoie la session de champ select à CHAQUE petit changement
     // (timer, survol d'un allié...) : on ne transmet que si MON choix change.
     let mut dernier_champ_select = deja_envoye;
-    while let Ok(message) = socket.read() {
+    loop {
+        let message = match socket.read() {
+            Ok(m) => m,
+            // Simple délai écoulé : ce n'est pas une fermeture, on continue d'écouter.
+            Err(tungstenite::Error::Io(e))
+                if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
+            {
+                continue
+            }
+            Err(e) => {
+                log!("Connexion au client LoL terminée ({e})");
+                return;
+            }
+        };
         let Message::Text(texte) = message else { continue };
         if let Some(ev) = traduire(&texte) {
             if let Evenement::ChampSelect { champion, role } = &ev {
@@ -177,7 +197,12 @@ pub fn traduire(texte: &str) -> Option<Evenement> {
     let charge = &v[2];
     match charge["uri"].as_str()? {
         "/lol-gameflow/v1/gameflow-phase" => {
-            Some(Evenement::Phase(Phase::depuis_texte(charge["data"].as_str().unwrap_or("None"))))
+            let texte = charge["data"].as_str().unwrap_or("None");
+            let phase = Phase::depuis_texte(texte);
+            if phase == Phase::Autre {
+                log!("Phase inconnue du client : {texte}");
+            }
+            Some(Evenement::Phase(phase))
         }
         "/lol-champ-select/v1/session" if charge["eventType"] != "Delete" => lire_champ_select(&charge["data"]),
         _ => None,

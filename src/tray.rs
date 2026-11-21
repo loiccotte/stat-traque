@@ -179,7 +179,18 @@ mod windows_impl {
         unsafe { SetErrorMode(SEM_FAILCRITICALERRORS) };
     }
 
-    /// En mode `--console` (ou commande `cle`), ouvre une console pour voir les messages.
+    /// Mode `--console` : ouvre une console À PART. Ctrl+C ou fermer cette fenêtre
+    /// arrête l'app (avec la console du terminal, Windows n'attend pas l'app et
+    /// Ctrl+C ne l'arrêtait pas).
+    pub fn nouvelle_console() {
+        use windows_sys::Win32::System::Console::{AllocConsole, FreeConsole};
+        unsafe {
+            FreeConsole();
+            AllocConsole();
+        }
+    }
+
+    /// Commandes courtes (`cle`, `region`, `aide`) : écrit dans le terminal d'où on lance.
     pub fn ouvrir_console() {
         use windows_sys::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
         unsafe {
@@ -191,13 +202,16 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::{definir_etat, instance_unique, lancer, ouvrir_console, sans_boites_erreur_disque};
+pub use windows_impl::{definir_etat, instance_unique, lancer, nouvelle_console, ouvrir_console, sans_boites_erreur_disque};
 
 #[cfg(not(windows))]
 pub fn definir_etat(_texte: &str) {}
 
 #[cfg(not(windows))]
 pub fn ouvrir_console() {}
+
+#[cfg(not(windows))]
+pub fn nouvelle_console() {}
 
 #[cfg(not(windows))]
 pub fn instance_unique() -> bool {

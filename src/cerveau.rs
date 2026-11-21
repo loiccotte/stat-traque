@@ -37,7 +37,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, console: bool) {
                 log!("Client LoL fermé, en attente...");
                 // On NE coupe PAS le suivi de partie : le jeu continue sans le client
                 // (beaucoup ferment le client pendant la partie). Il s'arrête seul à la fin.
-                etat.phase = Phase::Aucune;
+                // On garde aussi la phase : à la reconnexion, pas de doublon dans le journal.
                 crate::tray::definir_etat("En attente du client LoL");
             }
             Evenement::Phase(p) => changer_phase(&mut etat, p, &tx),

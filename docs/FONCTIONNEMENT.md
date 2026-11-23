@@ -19,13 +19,19 @@ Ne contient aucune clé, aucun puuid ni pseudo réel.
 - `playerlist` : `scores.creepScore`, `items`, `summonerSpells`, `runes`, `riotIdGameName`…
 - `riotId` arrive avec le `#` encodé en `%23`.
 - Mode streamer : `riotId` / `riotIdGameName` **vides** → affiché « (pseudo masqué) »,
-  jamais recherché (pas de dé-anonymisation).
+  jamais recherché (pas de dé-anonymisation). Exception : MON compte (puuid identique au
+  mien) reste « moi » avec ses rangs.
 
 ## puuid : client ≠ API Riot
 - Le client donne un puuid de **36 caractères** (format UUID) ; l'API Riot attend celui de
   **78 caractères**. Avec le court, Riot répond `400 Bad Request - Exception decrypting`.
 - Conversion (`src/lcu/identite.rs`) : `GET /lol-summoner/v2/summoners/puuid/{puuid_client}`
   → `gameName` + `tagLine`, puis account-v1 `by-riot-id` → puuid Riot (cache 24 h).
+- Pour MON compte, la correspondance est gardée dans `%APPDATA%\stat-traque\comptes.tsv`
+  (puuid client → puuid Riot) : ma fiche et mon historique marchent sans clé valide.
+- Le puuid Riot (78 car.) est **chiffré par application Riot** : avec une clé d'une autre
+  application (ex. passage d'une clé perso à une clé de production), l'ancien ne marche
+  plus (400 « Exception decrypting ») → supprimer `comptes.tsv` pour le reconvertir.
 
 ## Arena
 - Mode `CHERRY`, file **1750** (aussi 1700 / 1710 selon les saisons), 6 équipes de 3, 18 joueurs.

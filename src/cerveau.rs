@@ -38,6 +38,8 @@ struct SuiviChampSelect {
     runes_pour: u16,
     compo_affichee: (Vec<u16>, Vec<u16>),
     rangs_demandes: bool,
+    /// La file a déjà été relue pendant ce champ select (un seul essai).
+    file_relue: bool,
     /// Matchup / contre-picks déjà calculés pour (mon champion, ennemis, verrouillé).
     lane_pour: (u16, Vec<u16>, bool),
     /// Meilleurs / pires matchups déjà annoncés pour ce champion.
@@ -181,6 +183,10 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                         }
                         etat.mon_puuid_riot = Some(p);
                         apres_identification(&mut etat, &tx);
+                    } else {
+                        // Échec : la fiche demandée n'est pas ouverte bien plus tard par surprise
+                        // (la synchro de fin de partie, elle, reste en attente).
+                        etat.fiche_moi_attendue = false;
                     }
                 }
             }
@@ -443,8 +449,14 @@ fn champ_select(etat: &mut Etat, d: &DonneesJeu, cs: ChampSelect, tx: &Sender<Ev
 
     // 4. Rangs des alliés : seulement si le client donne leur identité (hors classé).
     // Deux garde-fous : puuid absent / nom masqué (champselect.rs) ET file classée.
-    let classee = matches!(etat.file_gameflow, Some(420 | 440));
-    if !etat.cs.rangs_demandes && !classee {
+    // Par défaut ON BLOQUE : on ne cherche les alliés que si la file est CONNUE et non
+    // classée. Si elle n'a pas pu être lue à l'entrée en champ select, un seul nouvel essai.
+    if etat.file_gameflow.is_none() && !etat.cs.file_relue {
+        etat.cs.file_relue = true;
+        etat.file_gameflow = lire_file(etat);
+    }
+    let autorisee = matches!(etat.file_gameflow, Some(f) if !matches!(f, 420 | 440));
+    if !etat.cs.rangs_demandes && autorisee {
         if let Some(api) = &etat.api {
             let connus: Vec<(String, u16, bool)> =
                 cs.allies.iter().filter_map(|a| a.puuid.as_ref().map(|p| (p.to_string(), a.champion, a.moi))).collect();

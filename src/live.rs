@@ -45,6 +45,25 @@ pub struct InstantanePartie {
     pub joueurs: Vec<JoueurLive>,
 }
 
+/// Texte affiché pour un joueur en mode streamer (Riot ID vide) : on n'essaie JAMAIS
+/// de retrouver son identité (règle Riot), on l'indique simplement.
+pub const PSEUDO_MASQUE: &str = "(pseudo masqué)";
+
+/// Pseudo d'un joueur de l'API live : `riotIdGameName`, sinon `riotId` (« Nom#TAG »,
+/// le # peut arriver encodé %23), sinon masqué.
+fn pseudo_live(j: &Value) -> Box<str> {
+    let nom = j["riotIdGameName"].as_str().filter(|s| !s.trim().is_empty());
+    let complet = || {
+        let id = j["riotId"].as_str()?.replace("%23", "#");
+        let nom = id.split('#').next()?.trim().to_string();
+        (!nom.is_empty()).then_some(nom)
+    };
+    match nom {
+        Some(n) => n.into(),
+        None => complet().map_or(PSEUDO_MASQUE.into(), Box::from),
+    }
+}
+
 impl InstantanePartie {
     /// Extrait le résumé depuis `/liveclientdata/playerlist` et `/liveclientdata/gamestats`.
     pub fn depuis_json(joueurs: &Value, stats: &Value) -> Option<Self> {
@@ -54,7 +73,7 @@ impl InstantanePartie {
             .as_array()?
             .iter()
             .map(|j| JoueurLive {
-                pseudo: texte(&j["riotIdGameName"]),
+                pseudo: pseudo_live(j),
                 champion: texte(&j["championName"]),
                 bleu: j["team"] == "ORDER",
                 niveau: j["level"].as_u64().unwrap_or(0) as u8,
@@ -173,5 +192,14 @@ mod tests {
         assert!(j.bleu);
         assert_eq!((j.kills, j.morts, j.assists, j.cs, j.niveau), (3, 1, 4, 102, 9));
         assert_eq!(j.items, vec![3020, 226655]); // id à 6 chiffres conservé
+    }
+
+    #[test]
+    fn pseudo_masque_en_mode_streamer() {
+        let v = |t: &str| serde_json::from_str::<Value>(t).unwrap();
+        assert_eq!(&*pseudo_live(&v(r#"{"riotIdGameName":"","riotId":""}"#)), PSEUDO_MASQUE);
+        assert_eq!(&*pseudo_live(&v(r#"{}"#)), PSEUDO_MASQUE);
+        assert_eq!(&*pseudo_live(&v(r#"{"riotIdGameName":"","riotId":"Nom%23EUW"}"#)), "Nom");
+        assert_eq!(&*pseudo_live(&v(r#"{"riotIdGameName":"Nom"}"#)), "Nom");
     }
 }

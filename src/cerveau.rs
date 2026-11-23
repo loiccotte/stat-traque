@@ -38,6 +38,8 @@ struct SuiviChampSelect {
     runes_pour: u16,
     compo_affichee: (Vec<u16>, Vec<u16>),
     rangs_demandes: bool,
+    /// La file a déjà été relue pendant ce champ select (un seul essai).
+    file_relue: bool,
     /// Matchup / contre-picks déjà calculés pour (mon champion, ennemis, verrouillé).
     lane_pour: (u16, Vec<u16>, bool),
     /// Meilleurs / pires matchups déjà annoncés pour ce champion.
@@ -59,10 +61,22 @@ struct Etat {
     /// Mon puuid au format de l'API Riot (78 caractères). Le client LoL en donne un plus
     /// court (36 caractères) que Riot refuse (erreur 400) : on le convertit via account-v1.
     mon_puuid_riot: Option<Box<str>>,
+    /// Une conversion client -> Riot tourne dans un thread (une seule à la fois).
+    conversion_en_cours: bool,
+    /// La synchro de l'historique au démarrage a été lancée pour ce compte.
+    synchro_initiale_faite: bool,
+    /// À lancer dès que mon puuid Riot sera connu (fin de partie, « Ma fiche »).
+    synchro_apres_partie_attendue: bool,
+    fiche_moi_attendue: bool,
     cs: SuiviChampSelect,
     /// Champ select reçu avant que Data Dragon soit prêt : traité après.
     cs_en_attente: Option<ChampSelect>,
     partie_scoutee: bool,
+    /// File de la partie lue dans /lol-gameflow/v1/session (source locale, au début de
+    /// la partie) : permet le récap même si spectator-v5 a échoué.
+    file_gameflow: Option<u16>,
+    /// Arena (CHERRY) : pas d'équipes fiables à afficher.
+    sans_equipes: bool,
     /// Numéro du compte connecté : +1 à chaque changement de compte. Les recherches de
     /// rangs le reçoivent et le renvoient ; un résultat d'un ancien numéro est ignoré.
     session_compte: u32,
@@ -85,9 +99,15 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
         api,
         mon_puuid: None,
         mon_puuid_riot: None,
+        conversion_en_cours: false,
+        synchro_initiale_faite: false,
+        synchro_apres_partie_attendue: false,
+        fiche_moi_attendue: false,
         cs: SuiviChampSelect::default(),
         cs_en_attente: None,
         partie_scoutee: false,
+        file_gameflow: None,
+        sans_equipes: false,
         session_compte: 0,
         suivi: None,
         mon_summoner_id: None,
@@ -130,23 +150,46 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
             // Recherche lancée pour un compte précédent : résultat périmé, ignoré.
             Evenement::Rangs { session, .. } if session != etat.session_compte => {}
             Evenement::Rangs { joueurs, .. } => {
+                noter_sans_equipes(&mut etat, None);
                 if let Some(d) = &etat.donnees {
-                    afficher_rangs(d, &joueurs);
+                    afficher_rangs(d, &joueurs, etat.sans_equipes);
                 }
                 affichage::modifier(|e| e.rangs = joueurs);
             }
             Evenement::Partie(p) => {
+                noter_sans_equipes(&mut etat, Some(&p.mode));
                 if etat.mode != Mode::Tray {
-                    afficher_partie(&p);
+                    afficher_partie(&p, etat.sans_equipes);
                 }
                 affichage::modifier(|e| e.partie = Some(p));
             }
             Evenement::Historique(maj) => crate::historique::publier(*maj, etat.donnees.as_deref()),
             Evenement::DemandeFiche { puuid } => demander_fiche(&etat, &puuid, &tx),
-            Evenement::DemandeMaFiche => match puuid_pour_api(&mut etat).or_else(|| etat.mon_puuid.clone()) {
+            Evenement::DemandeMaFiche => match puuid_pour_api(&mut etat, &tx) {
                 Some(moi) => demander_fiche(&etat, &moi, &tx),
-                None => log!("Ma fiche : compte inconnu (lance le client LoL une fois)."),
+                // Jamais le puuid court : l'historique est rangé sous le puuid Riot.
+                None if etat.mon_puuid.is_none() => log!("Ma fiche : compte inconnu (lance le client LoL une fois)."),
+                None => {
+                    etat.fiche_moi_attendue = true;
+                    log!("Ma fiche : compte pas encore identifié auprès de Riot (une clé API valide est nécessaire la première fois).");
+                }
             },
+            Evenement::MonPuuidRiot { session, puuid } => {
+                if session == etat.session_compte {
+                    etat.conversion_en_cours = false;
+                    if let Some(p) = puuid {
+                        if let Some(client) = &etat.mon_puuid {
+                            crate::lcu::identite::memoire_ecrire(client, &p);
+                        }
+                        etat.mon_puuid_riot = Some(p);
+                        apres_identification(&mut etat, &tx);
+                    } else {
+                        // Échec : la fiche demandée n'est pas ouverte bien plus tard par surprise
+                        // (la synchro de fin de partie, elle, reste en attente).
+                        etat.fiche_moi_attendue = false;
+                    }
+                }
+            }
             Evenement::Fiche(f) => crate::fiche::publier(*f, etat.donnees.as_deref()),
             Evenement::Fenetre => suivre_si_utile(&mut etat, &tx),
             Evenement::Quitter => break,
@@ -163,6 +206,9 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     if p == Phase::ChampSelect {
         etat.cs = SuiviChampSelect::default();
         etat.partie_scoutee = false;
+        etat.sans_equipes = false;
+        // File du champ select (1 requête locale) : sert au garde-fou « classée ».
+        etat.file_gameflow = lire_file(etat);
         crate::rangs::oublier_partie();
         // Les joueurs de la partie PRÉCÉDENTE ne sont plus « de la partie » : on retire
         // leur autorisation de fiche (on la garde après la partie pour consulter leur fiche).
@@ -170,16 +216,33 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         affichage::modifier(|e| {
             e.champ_select = Some(VueChampSelect::default());
             e.rangs.clear();
+            e.sans_equipes = false;
             e.partie = None;
         });
     }
     affichage::modifier(|e| e.phase = Some(p));
+    // Retour au salon / client au repos : la partie précédente est finie (une partie
+    // TFT, sans champ select, ne doit pas hériter de la file ni du mode Arena).
+    if matches!(p, Phase::Lobby | Phase::Aucune) {
+        etat.file_gameflow = None;
+        etat.sans_equipes = false;
+    }
+    // File de la partie, lue une fois (1 requête locale, ~0 coût) : au début de la
+    // partie, ou en fin de partie si le client était fermé au démarrage.
+    let fin = matches!(p, Phase::WaitingForStats | Phase::PreEndOfGame | Phase::EndOfGame);
+    if (p.en_partie() || fin) && etat.file_gameflow.is_none() {
+        etat.file_gameflow = lire_file(etat);
+    }
     // Fin de partie : on récupère la partie chez Riot (historique + récap + LP).
-    // Seulement si spectator a trouvé une partie officielle : une partie personnalisée
-    // ou l'outil d'entraînement n'apparaîtront jamais dans match-v5 (requêtes inutiles).
-    if p == Phase::EndOfGame && crate::rangs::file_partie().is_some() {
-        if let (Some(api), Some(riot)) = (etat.api.clone(), puuid_pour_api(etat)) {
-            crate::historique::lancer_synchro(api, riot, true, tx.clone());
+    // Synchro seulement pour une partie officielle (une personnalisée ou l'outil
+    // d'entraînement n'apparaîtront jamais dans match-v5 : requêtes inutiles).
+    // Spectator OU le client : une seule des deux sources suffit.
+    let file_connue = crate::rangs::file_partie().or(etat.file_gameflow);
+    if p == Phase::EndOfGame && file_connue.is_some() && etat.api.is_some() {
+        match puuid_pour_api(etat, tx) {
+            Some(riot) => crate::historique::lancer_synchro(etat.api.clone().unwrap(), riot, true, tx.clone()),
+            // Compte pas encore identifié : la synchro partira dès qu'il le sera.
+            None => etat.synchro_apres_partie_attendue = true,
         }
     }
     scouter_si_besoin(etat, p, tx);
@@ -230,7 +293,7 @@ fn demander_fiche(etat: &Etat, puuid: &str, tx: &Sender<Evenement>) {
 /// Rangs des 10 joueurs, une fois par partie (il faut connaître mon compte).
 fn scouter_si_besoin(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     if p.en_partie() && !etat.partie_scoutee {
-        if let (Some(api), Some(riot)) = (etat.api.clone(), puuid_pour_api(etat)) {
+        if let (Some(api), Some(riot)) = (etat.api.clone(), puuid_pour_api(etat, tx)) {
             etat.partie_scoutee = true;
             log!("Recherche des rangs des joueurs...");
             crate::rangs::scouter_partie(api, riot.to_string(), etat.session_compte, tx.clone());
@@ -238,35 +301,68 @@ fn scouter_si_besoin(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     }
 }
 
-/// Mon puuid au format de l'API Riot, converti une seule fois puis gardé en mémoire.
-/// Le client LoL donne un puuid de 36 caractères ; Riot en attend un de 78 (sinon
-/// « 400 Bad Request - Exception decrypting »). On demande donc mon Riot ID au client
-/// (`gameName` + `tagLine`), puis le vrai puuid à account-v1 (réponse gardée 24 h en cache).
-/// Renvoie `None` si on ne peut pas encore le savoir (pas de clé API, client absent...).
-fn puuid_pour_api(etat: &mut Etat) -> Option<Box<str>> {
+/// File de la partie selon le client (/lol-gameflow/v1/session). 1 requête locale.
+fn lire_file(etat: &Etat) -> Option<u16> {
+    etat.lcu.as_ref().and_then(|l| l.get("/lol-gameflow/v1/session")).and_then(|s| crate::gameflow::file_depuis_session(&s))
+}
+
+/// Mon puuid au format de l'API Riot (voir lcu/identite.rs : le client donne un puuid
+/// de 36 caractères, Riot en attend 78). NE BLOQUE JAMAIS le cerveau :
+///  - déjà connu (mémoire, ou fichier comptes.tsv) -> renvoyé tout de suite ;
+///  - sinon une conversion est lancée dans un thread (une seule à la fois) et on
+///    renvoie None ; le résultat arrive en `Evenement::MonPuuidRiot`, qui relance
+///    ce qui attendait (synchro, rangs, ma fiche) dans `apres_identification`.
+fn puuid_pour_api(etat: &mut Etat, tx: &Sender<Evenement>) -> Option<Box<str>> {
     if let Some(deja) = &etat.mon_puuid_riot {
         return Some(deja.clone());
     }
     let client = etat.mon_puuid.clone()?;
-    if client.len() >= 70 {
-        // Déjà au format Riot (ancien client, rejeu...) : rien à convertir.
-        etat.mon_puuid_riot = Some(client);
+    let connu = if crate::lcu::identite::est_puuid_riot(&client) {
+        Some(client.to_string()) // déjà au format Riot (rejeu, ancien client)
+    } else {
+        crate::lcu::identite::memoire_lire(&client) // 0 requête, marche sans clé API
+    };
+    if let Some(riot) = connu {
+        etat.mon_puuid_riot = Some(riot.into());
         return etat.mon_puuid_riot.clone();
     }
-    let (lcu, api) = (etat.lcu.as_ref()?, etat.api.as_ref()?);
-    let infos = lcu.get(&format!("/lol-summoner/v2/summoners/puuid/{client}"))?;
-    let (nom, tag) = (infos["gameName"].as_str()?, infos["tagLine"].as_str()?);
-    match api.compte(nom, tag) {
-        Ok(compte) => {
-            let riot: Box<str> = compte["puuid"].as_str()?.into();
-            etat.mon_puuid_riot = Some(riot.clone());
-            Some(riot)
-        }
-        Err(e) => {
-            log!("Impossible de convertir mon puuid pour l'API Riot : {e}");
-            None
+    if !etat.conversion_en_cours {
+        if let (Some(lcu), Some(api)) = (etat.lcu.clone(), etat.api.clone()) {
+            etat.conversion_en_cours = true;
+            let (session, tx) = (etat.session_compte, tx.clone());
+            std::thread::spawn(move || {
+                let source = crate::lcu::identite::Reelle { lcu: &lcu, api: &api };
+                let puuid = match crate::lcu::identite::convertir(&source, &client) {
+                    Ok(id) => Some(id.puuid.into()),
+                    Err(e) => {
+                        log!("Impossible de convertir mon puuid pour l'API Riot : {e} (nouvel essai au prochain besoin).");
+                        None
+                    }
+                };
+                let _ = tx.send(Evenement::MonPuuidRiot { session, puuid });
+            });
         }
     }
+    None
+}
+
+/// Mon puuid Riot vient d'être connu : on lance tout ce qui l'attendait.
+fn apres_identification(etat: &mut Etat, tx: &Sender<Evenement>) {
+    let Some(riot) = etat.mon_puuid_riot.clone() else { return };
+    if let Some(api) = etat.api.clone() {
+        if !etat.synchro_initiale_faite {
+            etat.synchro_initiale_faite = true;
+            crate::historique::lancer_synchro(api.clone(), riot.clone(), false, tx.clone());
+        }
+        if std::mem::take(&mut etat.synchro_apres_partie_attendue) {
+            crate::historique::lancer_synchro(api, riot.clone(), true, tx.clone());
+        }
+    }
+    if std::mem::take(&mut etat.fiche_moi_attendue) {
+        demander_fiche(etat, &riot, tx);
+    }
+    let phase = etat.phase;
+    scouter_si_besoin(etat, phase, tx);
 }
 
 /// Multi-comptes : le client annonce son compte à chaque connexion (et dès qu'il
@@ -290,7 +386,10 @@ fn changer_compte(etat: &mut Etat, puuid: Box<str>, summoner_id: Option<u64>, tx
         etat.cs = SuiviChampSelect::default();
         etat.cs_en_attente = None;
         etat.partie_scoutee = false;
+        etat.file_gameflow = None;
+        etat.sans_equipes = false;
         affichage::modifier(|e| {
+            e.sans_equipes = false;
             e.champ_select = None;
             e.rangs.clear();
             e.partie = None;
@@ -301,13 +400,16 @@ fn changer_compte(etat: &mut Etat, puuid: Box<str>, summoner_id: Option<u64>, tx
     // Nouveau compte (ou premier) : synchro de son historique en arrière-plan.
     // (Pas à chaque `Moi` : le client en renvoie un à chaque changement d'XP, d'icône...)
     etat.mon_puuid = Some(puuid);
-    etat.mon_puuid_riot = None; // à reconvertir pour ce compte
-    if let (Some(api), Some(riot)) = (etat.api.clone(), puuid_pour_api(etat)) {
-        crate::historique::lancer_synchro(api, riot, false, tx.clone());
+    etat.mon_puuid_riot = None; // à retrouver pour ce compte
+    etat.conversion_en_cours = false; // une conversion de l'ancien compte sera ignorée (session)
+    etat.synchro_initiale_faite = false;
+    etat.synchro_apres_partie_attendue = false;
+    etat.fiche_moi_attendue = false;
+    // Connu tout de suite (fichier comptes.tsv) : synchro + rangs maintenant ; sinon
+    // la conversion part en arrière-plan et `apres_identification` s'en chargera.
+    if puuid_pour_api(etat, tx).is_some() {
+        apres_identification(etat, tx);
     }
-    // Compte annoncé APRÈS le début de la partie : on cherche les rangs maintenant.
-    let phase = etat.phase;
-    scouter_si_besoin(etat, phase, tx);
 }
 
 /// Id Data Dragon ("MonkeyKing") d'un champion.
@@ -346,13 +448,21 @@ fn champ_select(etat: &mut Etat, d: &DonneesJeu, cs: ChampSelect, tx: &Sender<Ev
     }
 
     // 4. Rangs des alliés : seulement si le client donne leur identité (hors classé).
-    if !etat.cs.rangs_demandes {
+    // Deux garde-fous : puuid absent / nom masqué (champselect.rs) ET file classée.
+    // Par défaut ON BLOQUE : on ne cherche les alliés que si la file est CONNUE et non
+    // classée. Si elle n'a pas pu être lue à l'entrée en champ select, un seul nouvel essai.
+    if etat.file_gameflow.is_none() && !etat.cs.file_relue {
+        etat.cs.file_relue = true;
+        etat.file_gameflow = lire_file(etat);
+    }
+    let autorisee = matches!(etat.file_gameflow, Some(f) if !matches!(f, 420 | 440));
+    if !etat.cs.rangs_demandes && autorisee {
         if let Some(api) = &etat.api {
             let connus: Vec<(String, u16, bool)> =
                 cs.allies.iter().filter_map(|a| a.puuid.as_ref().map(|p| (p.to_string(), a.champion, a.moi))).collect();
             if connus.len() > 1 {
                 etat.cs.rangs_demandes = true;
-                crate::rangs::scouter_allies(api.clone(), connus, etat.session_compte, tx.clone());
+                crate::rangs::scouter_allies(api.clone(), etat.lcu.clone(), connus, etat.session_compte, tx.clone());
             }
         }
     }
@@ -466,12 +576,31 @@ fn runes(etat: &Etat, d: &DonneesJeu, champion: u16, role: Option<&str>) {
     });
 }
 
-fn afficher_rangs(d: &DonneesJeu, joueurs: &[InfoJoueur]) {
+/// Arena (mode CHERRY, files 1700/1710/1750) : l'API live et spectator ne donnent pas
+/// les trios de façon fiable (tout le monde « ORDER » ou bleu, ou un mélange) : on
+/// n'affiche alors aucune couleur d'équipe. `mode_live` = gameMode du port 2999.
+fn noter_sans_equipes(etat: &mut Etat, mode_live: Option<&str>) {
+    let arena_file = crate::rangs::file_partie()
+        .or(etat.file_gameflow)
+        .is_some_and(|f| crate::historique::famille(f) == crate::historique::Famille::Arena);
+    etat.sans_equipes |= arena_file || mode_live == Some("CHERRY");
+    // Publié dans les deux sens : une partie normale après une Arena repasse en équipes.
+    let valeur = etat.sans_equipes;
+    affichage::modifier(|e| e.sans_equipes = valeur);
+}
+
+fn afficher_rangs(d: &DonneesJeu, joueurs: &[InfoJoueur], sans_equipes: bool) {
     let mut joueurs = joueurs.to_vec();
-    joueurs.sort_by_key(|j| !j.bleu);
+    if !sans_equipes {
+        joueurs.sort_by_key(|j| !j.bleu);
+    }
     log!("--- Rangs ---");
     for j in &joueurs {
-        let equipe = if j.bleu { "BLEU " } else { "ROUGE" };
+        let equipe = match (sans_equipes, j.bleu) {
+            (true, _) => "     ",
+            (false, true) => "BLEU ",
+            (false, false) => "ROUGE",
+        };
         let solo = j.solo.as_ref().map_or("non classé".into(), |r| {
             format!("{r} ({:.0} % sur {}){}", r.winrate(), r.victoires + r.defaites, if r.serie { " en série" } else { "" })
         });
@@ -491,10 +620,14 @@ fn afficher_rangs(d: &DonneesJeu, joueurs: &[InfoJoueur]) {
     }
 }
 
-fn afficher_partie(p: &InstantanePartie) {
+fn afficher_partie(p: &InstantanePartie, sans_equipes: bool) {
     println!("\n--- Partie {} | {}:{:02} ---", p.mode, p.secondes / 60, p.secondes % 60);
     for j in &p.joueurs {
-        let equipe = if j.bleu { "BLEU" } else { "ROUGE" };
+        let equipe = match (sans_equipes, j.bleu) {
+            (true, _) => "",
+            (false, true) => "BLEU",
+            (false, false) => "ROUGE",
+        };
         println!(
             "{equipe:<6} {:<14} niv {:>2}  {}/{}/{}  {:>3} cs  {}",
             j.champion, j.niveau, j.kills, j.morts, j.assists, j.cs, j.pseudo

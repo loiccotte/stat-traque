@@ -132,6 +132,10 @@ pub struct EtatAffichage {
     pub champ_select: Option<VueChampSelect>,
     pub rangs: Vec<InfoJoueur>,
     pub partie: Option<InstantanePartie>,
+    /// Mode sans équipes fiables (Arena / CHERRY) : on n'affiche ni bleu ni rouge.
+    /// L'API live et spectator n'y donnent pas les trios de façon fiable.
+    #[serde(default)]
+    pub sans_equipes: bool,
     pub messages: Vec<String>,
     /// Données du patch (noms des champions, objets...) : partagées, pas copiées
     /// (`Arc` = pointeur partagé, le cloner ne copie que le pointeur).

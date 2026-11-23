@@ -80,7 +80,7 @@ pub fn nom_file(file: u16) -> &'static str {
         450 => "ARAM",
         700 | 720 => "Clash",
         900 | 1900 => "URF",
-        1700 | 1710 => "Arena",
+        1700 | 1710 | 1750 => "Arena",
         0 => "Personnalisée",
         _ => "Autre mode",
     }
@@ -114,7 +114,8 @@ pub fn famille(file: u16) -> Famille {
     match file {
         400 | 420 | 430 | 440 | 490 | 700 => Famille::Faille,
         450 | 720 => Famille::Aram,
-        1700 | 1710 => Famille::Arena,
+        // 1750 : Arena (mode CHERRY, 6 équipes de 3) observé en novembre 2026.
+        1700 | 1710 | 1750 => Famille::Arena,
         _ => Famille::Autre,
     }
 }
@@ -1309,6 +1310,8 @@ mod tests {
         assert!(r.lignes.iter().all(|l| l.moyenne.is_none()));
         // L'Arena non plus, et une normale draft est comparée aux classées (Faille).
         assert_eq!(famille(1700), Famille::Arena);
+        assert_eq!(famille(1750), Famille::Arena);
+        assert_eq!(nom_file(1750), "Arena");
         let draft = ResumePartie::depuis_match(&match_json("D", 11, 400, 103, true, (4, 2, 0)), MOI).unwrap();
         assert_eq!(Recap::calculer(&h, &draft).parties_champion, 3);
     }

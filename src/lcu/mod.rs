@@ -8,6 +8,7 @@
 
 pub mod actions;
 pub mod evenements;
+pub mod identite;
 
 use std::path::{Path, PathBuf};
 

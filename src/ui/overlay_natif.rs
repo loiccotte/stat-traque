@@ -170,7 +170,7 @@ pub unsafe fn redessiner() {
     }
     // Seulement ce qu'il faut, lu sous le verrou (pas de copie de tout l'état).
     let grille =
-        crate::affichage::avec(|e| format::grille_overlay(&e.rangs, e.donnees.as_deref(), e.cle_api));
+        crate::affichage::avec(|e| format::grille_overlay(&e.rangs, e.donnees.as_deref(), e.cle_api, e.sans_equipes));
     let dpi = dpi(fenetre);
     {
         let c = CONTENU.lock().unwrap();

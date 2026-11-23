@@ -181,9 +181,33 @@ pub fn fraction(valeur: f32, max: f32) -> f32 {
     (valeur / max).clamp(0.0, 1.0)
 }
 
-/// Les deux équipes, bleue d'abord, chacune dans l'ordre reçu.
-pub fn par_equipe(joueurs: &[InfoJoueur]) -> (Vec<&InfoJoueur>, Vec<&InfoJoueur>) {
-    joueurs.iter().partition(|j| j.bleu)
+/// Un groupe de joueurs à afficher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Groupe {
+    Bleue,
+    Rouge,
+    /// Arena : un seul groupe, sans couleur d'équipe (les trios ne sont pas connus).
+    Tous,
+}
+
+impl Groupe {
+    pub fn titre(self) -> &'static str {
+        match self {
+            Groupe::Bleue => "Équipe bleue",
+            Groupe::Rouge => "Équipe rouge",
+            Groupe::Tous => "Joueurs",
+        }
+    }
+}
+
+/// Répartit les joueurs en groupes (vides retirés). `sans_equipes` (Arena) : un seul
+/// groupe dans l'ordre reçu ; on n'invente pas de trios. `bleu` dit l'équipe d'un joueur.
+pub fn groupes<T>(joueurs: &[T], sans_equipes: bool, bleu: impl Fn(&T) -> bool) -> Vec<(Groupe, Vec<&T>)> {
+    if sans_equipes {
+        return vec![(Groupe::Tous, joueurs.iter().collect())];
+    }
+    let (bleus, rouges): (Vec<&T>, Vec<&T>) = joueurs.iter().partition(|j| bleu(j));
+    [(Groupe::Bleue, bleus), (Groupe::Rouge, rouges)].into_iter().filter(|(_, j)| !j.is_empty()).collect()
 }
 
 /// Texte de statut affiché en haut de la fenêtre.
@@ -212,6 +236,14 @@ pub fn borner_position([x, y]: [f32; 2], (ex, ey, largeur, hauteur): (i32, i32, 
     (borne(x, ex, largeur), borne(y, ey, hauteur))
 }
 
+/// Arena : les joueurs répartis en deux colonnes dans l'ordre reçu (1re moitié à
+/// gauche, 2e à droite). Utilisée par les DEUX overlays (natif et egui) pour qu'ils
+/// montrent le même ordre.
+pub fn colonnes_arena<T>(joueurs: &[T]) -> (Vec<&T>, Vec<&T>) {
+    let (a, b) = joueurs.split_at(joueurs.len().div_ceil(2));
+    (a.iter().collect(), b.iter().collect())
+}
+
 /// Une case de l'overlay : texte + couleur (rouge, vert, bleu).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cellule {
@@ -223,10 +255,19 @@ const GRIS: [u8; 3] = [160, 155, 140];
 const OR: [u8; 3] = [200, 170, 110];
 const BLEU: [u8; 3] = [80, 150, 240];
 const ROUGE: [u8; 3] = [232, 64, 87];
+const NEUTRE: [u8; 3] = [240, 230, 210];
 
 /// Les 3 cases d'un joueur : champion, rang court, winrate (nombre de parties).
-fn cellules_joueur(j: &InfoJoueur, donnees: Option<&DonneesJeu>) -> [Cellule; 3] {
-    let couleur_equipe = if j.moi { OR } else if j.bleu { BLEU } else { ROUGE };
+fn cellules_joueur(j: &InfoJoueur, donnees: Option<&DonneesJeu>, sans_equipes: bool) -> [Cellule; 3] {
+    let couleur_equipe = if j.moi {
+        OR
+    } else if sans_equipes {
+        NEUTRE
+    } else if j.bleu {
+        BLEU
+    } else {
+        ROUGE
+    };
     let (rang, couleur_rang) = match &j.solo {
         Some(r) => (rang_court(Some(r)), couleur_palier(&r.palier)),
         None => (rang_court(None), GRIS),
@@ -242,26 +283,30 @@ fn cellules_joueur(j: &InfoJoueur, donnees: Option<&DonneesJeu>) -> [Cellule; 3]
 }
 
 /// Contenu de l'overlay : une ligne par joueur, équipe bleue à gauche (3 cases),
-/// rouge à droite (3 cases). Sans rangs : une seule ligne de message.
-pub fn grille_overlay(rangs: &[InfoJoueur], donnees: Option<&DonneesJeu>, cle_api: bool) -> Vec<Vec<Cellule>> {
+/// rouge à droite (3 cases). Arena (`sans_equipes`) : deux joueurs par ligne dans
+/// l'ordre reçu, sans couleur d'équipe. Sans rangs : une seule ligne de message.
+pub fn grille_overlay(rangs: &[InfoJoueur], donnees: Option<&DonneesJeu>, cle_api: bool, sans_equipes: bool) -> Vec<Vec<Cellule>> {
     if rangs.is_empty() {
         let texte = if cle_api { "stat-traque : rangs en cours de chargement…" } else { "stat-traque : pas de clé API, rangs indisponibles" };
         return vec![vec![Cellule { texte: texte.into(), couleur: GRIS }]];
     }
-    let (bleus, rouges) = par_equipe(rangs);
     let vide = || Cellule { texte: String::new(), couleur: GRIS };
-    (0..bleus.len().max(rouges.len()))
-        .map(|i| {
-            let mut ligne = Vec::with_capacity(6);
-            for equipe in [&bleus, &rouges] {
-                match equipe.get(i) {
-                    Some(j) => ligne.extend(cellules_joueur(j, donnees)),
-                    None => ligne.extend([vide(), vide(), vide()]),
-                }
+    let ligne_de = |a: Option<&InfoJoueur>, b: Option<&InfoJoueur>| {
+        let mut ligne = Vec::with_capacity(6);
+        for j in [a, b] {
+            match j {
+                Some(j) => ligne.extend(cellules_joueur(j, donnees, sans_equipes)),
+                None => ligne.extend([vide(), vide(), vide()]),
             }
-            ligne
-        })
-        .collect()
+        }
+        ligne
+    };
+    if sans_equipes {
+        let (a, b) = colonnes_arena(rangs);
+        return (0..a.len()).map(|i| ligne_de(a.get(i).copied(), b.get(i).copied())).collect();
+    }
+    let (bleus, rouges): (Vec<&InfoJoueur>, Vec<&InfoJoueur>) = rangs.iter().partition(|j| j.bleu);
+    (0..bleus.len().max(rouges.len())).map(|i| ligne_de(bleus.get(i).copied(), rouges.get(i).copied())).collect()
 }
 
 /// Date relative : « il y a 5 min », « il y a 3 h », « il y a 2 j ».
@@ -336,16 +381,38 @@ mod tests {
     #[test]
     fn grille_de_l_overlay() {
         let e = crate::ui::demo::etat(Phase::InProgress);
-        let g = grille_overlay(&e.rangs, e.donnees.as_deref(), true);
+        let g = grille_overlay(&e.rangs, e.donnees.as_deref(), true, false);
         assert_eq!(g.len(), 5);
         assert!(g.iter().all(|l| l.len() == 6));
         assert_eq!(g[0][0].texte, "Zed");
         assert_eq!(g[0][0].couleur, OR, "moi en or");
         assert_eq!(g[0][3].texte, "Ahri");
         assert_eq!(g[0][1].texte, "E2 40 LP");
-        let vide = grille_overlay(&[], None, false);
+        let vide = grille_overlay(&[], None, false, false);
         assert_eq!(vide.len(), 1);
         assert!(vide[0][0].texte.contains("clé API"));
+    }
+
+    #[test]
+    fn arena_sans_couleur_d_equipe() {
+        // 18 joueurs, équipes incohérentes (comme l'API live en Arena) : 9 lignes de 2,
+        // aucune couleur bleue ou rouge, moi toujours en or.
+        let mut e = crate::ui::demo::etat(Phase::InProgress);
+        let modele = e.rangs[1].clone();
+        e.rangs.truncate(1);
+        for i in 0..17 {
+            let mut j = modele.clone();
+            j.bleu = i % 2 == 0;
+            e.rangs.push(j);
+        }
+        let g = grille_overlay(&e.rangs, e.donnees.as_deref(), true, true);
+        assert_eq!(g.len(), 9);
+        assert_eq!(g[0][0].couleur, OR);
+        assert!(g.iter().flatten().all(|c| c.couleur != BLEU && c.couleur != ROUGE));
+        let groupes_arena = groupes(&e.rangs, true, |j| j.bleu);
+        assert_eq!(groupes_arena.len(), 1);
+        assert_eq!((groupes_arena[0].0, groupes_arena[0].1.len()), (Groupe::Tous, 18));
+        assert_eq!(groupes(&e.rangs, false, |j| j.bleu).len(), 2);
     }
 
     #[test]

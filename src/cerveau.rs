@@ -56,6 +56,9 @@ struct Etat {
     lcu: Option<Lcu>,
     api: Option<Arc<RiotApi>>,
     mon_puuid: Option<Box<str>>,
+    /// Mon puuid au format de l'API Riot (78 caractères). Le client LoL en donne un plus
+    /// court (36 caractères) que Riot refuse (erreur 400) : on le convertit via account-v1.
+    mon_puuid_riot: Option<Box<str>>,
     cs: SuiviChampSelect,
     /// Champ select reçu avant que Data Dragon soit prêt : traité après.
     cs_en_attente: Option<ChampSelect>,
@@ -81,6 +84,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
         lcu: None,
         api,
         mon_puuid: None,
+        mon_puuid_riot: None,
         cs: SuiviChampSelect::default(),
         cs_en_attente: None,
         partie_scoutee: false,
@@ -139,7 +143,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
             }
             Evenement::Historique(maj) => crate::historique::publier(*maj, etat.donnees.as_deref()),
             Evenement::DemandeFiche { puuid } => demander_fiche(&etat, &puuid, &tx),
-            Evenement::DemandeMaFiche => match etat.mon_puuid.clone() {
+            Evenement::DemandeMaFiche => match puuid_pour_api(&mut etat).or_else(|| etat.mon_puuid.clone()) {
                 Some(moi) => demander_fiche(&etat, &moi, &tx),
                 None => log!("Ma fiche : compte inconnu (lance le client LoL une fois)."),
             },
@@ -174,8 +178,8 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     // Seulement si spectator a trouvé une partie officielle : une partie personnalisée
     // ou l'outil d'entraînement n'apparaîtront jamais dans match-v5 (requêtes inutiles).
     if p == Phase::EndOfGame && crate::rangs::file_partie().is_some() {
-        if let (Some(api), Some(puuid)) = (&etat.api, &etat.mon_puuid) {
-            crate::historique::lancer_synchro(api.clone(), puuid.clone(), true, tx.clone());
+        if let (Some(api), Some(riot)) = (etat.api.clone(), puuid_pour_api(etat)) {
+            crate::historique::lancer_synchro(api, riot, true, tx.clone());
         }
     }
     scouter_si_besoin(etat, p, tx);
@@ -208,7 +212,7 @@ fn suivre_si_utile(etat: &mut Etat, tx: &Sender<Evenement>) {
 /// de ma partie en cours connu par spectator-v5 (jamais un pseudo caché de champ select).
 fn demander_fiche(etat: &Etat, puuid: &str, tx: &Sender<Evenement>) {
     let patch = crate::fiche::patch_de(etat.donnees.as_deref());
-    if etat.mon_puuid.as_deref() == Some(puuid) {
+    if etat.mon_puuid_riot.as_deref() == Some(puuid) || etat.mon_puuid.as_deref() == Some(puuid) {
         // Ma fiche : base locale, 0 requête -> marche aussi sans clé API.
         crate::fiche::lancer(etat.api.clone(), puuid.to_string(), "Moi".into(), true, patch, tx.clone());
     } else if let Some(nom) = crate::fiche::nom_autorise(puuid) {
@@ -226,10 +230,41 @@ fn demander_fiche(etat: &Etat, puuid: &str, tx: &Sender<Evenement>) {
 /// Rangs des 10 joueurs, une fois par partie (il faut connaître mon compte).
 fn scouter_si_besoin(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     if p.en_partie() && !etat.partie_scoutee {
-        if let (Some(api), Some(puuid)) = (&etat.api, &etat.mon_puuid) {
+        if let (Some(api), Some(riot)) = (etat.api.clone(), puuid_pour_api(etat)) {
             etat.partie_scoutee = true;
             log!("Recherche des rangs des joueurs...");
-            crate::rangs::scouter_partie(api.clone(), puuid.to_string(), etat.session_compte, tx.clone());
+            crate::rangs::scouter_partie(api, riot.to_string(), etat.session_compte, tx.clone());
+        }
+    }
+}
+
+/// Mon puuid au format de l'API Riot, converti une seule fois puis gardé en mémoire.
+/// Le client LoL donne un puuid de 36 caractères ; Riot en attend un de 78 (sinon
+/// « 400 Bad Request - Exception decrypting »). On demande donc mon Riot ID au client
+/// (`gameName` + `tagLine`), puis le vrai puuid à account-v1 (réponse gardée 24 h en cache).
+/// Renvoie `None` si on ne peut pas encore le savoir (pas de clé API, client absent...).
+fn puuid_pour_api(etat: &mut Etat) -> Option<Box<str>> {
+    if let Some(deja) = &etat.mon_puuid_riot {
+        return Some(deja.clone());
+    }
+    let client = etat.mon_puuid.clone()?;
+    if client.len() >= 70 {
+        // Déjà au format Riot (ancien client, rejeu...) : rien à convertir.
+        etat.mon_puuid_riot = Some(client);
+        return etat.mon_puuid_riot.clone();
+    }
+    let (lcu, api) = (etat.lcu.as_ref()?, etat.api.as_ref()?);
+    let infos = lcu.get(&format!("/lol-summoner/v2/summoners/puuid/{client}"))?;
+    let (nom, tag) = (infos["gameName"].as_str()?, infos["tagLine"].as_str()?);
+    match api.compte(nom, tag) {
+        Ok(compte) => {
+            let riot: Box<str> = compte["puuid"].as_str()?.into();
+            etat.mon_puuid_riot = Some(riot.clone());
+            Some(riot)
+        }
+        Err(e) => {
+            log!("Impossible de convertir mon puuid pour l'API Riot : {e}");
+            None
         }
     }
 }
@@ -265,10 +300,11 @@ fn changer_compte(etat: &mut Etat, puuid: Box<str>, summoner_id: Option<u64>, tx
     // Premier compte vu : rien à oublier (le champ select en cours reste valable).
     // Nouveau compte (ou premier) : synchro de son historique en arrière-plan.
     // (Pas à chaque `Moi` : le client en renvoie un à chaque changement d'XP, d'icône...)
-    if let Some(api) = &etat.api {
-        crate::historique::lancer_synchro(api.clone(), puuid.clone(), false, tx.clone());
-    }
     etat.mon_puuid = Some(puuid);
+    etat.mon_puuid_riot = None; // à reconvertir pour ce compte
+    if let (Some(api), Some(riot)) = (etat.api.clone(), puuid_pour_api(etat)) {
+        crate::historique::lancer_synchro(api, riot, false, tx.clone());
+    }
     // Compte annoncé APRÈS le début de la partie : on cherche les rangs maintenant.
     let phase = etat.phase;
     scouter_si_besoin(etat, phase, tx);

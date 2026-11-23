@@ -61,7 +61,8 @@ impl Phase {
 /// (id ≤ 0) ou une réponse inattendue. Source LOCALE : marche même si spectator échoue.
 pub fn file_depuis_session(session: &serde_json::Value) -> Option<u16> {
     let donnees = &session["gameData"];
-    if donnees["isCustomGame"] == true {
+    // Partie personnalisée, ou TFT (pas une partie LoL : jamais dans match-v5 LoL).
+    if donnees["isCustomGame"] == true || donnees["queue"]["gameMode"] == "TFT" {
         return None;
     }
     donnees["queue"]["id"].as_i64().filter(|id| *id > 0 && *id <= u16::MAX as i64).map(|id| id as u16)
@@ -78,6 +79,7 @@ mod tests {
         assert_eq!(file_depuis_session(&v(r#"{"gameData":{"queue":{"id":-1}}}"#)), None);
         assert_eq!(file_depuis_session(&v(r#"{"gameData":{"isCustomGame":true,"queue":{"id":0}}}"#)), None);
         assert_eq!(file_depuis_session(&v("{}")), None);
+        assert_eq!(file_depuis_session(&v(r#"{"gameData":{"queue":{"id":1100,"gameMode":"TFT"}}}"#)), None);
     }
 
     #[test]

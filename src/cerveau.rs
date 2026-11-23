@@ -215,8 +215,16 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         });
     }
     affichage::modifier(|e| e.phase = Some(p));
-    // File de la partie, lue une fois au début (1 requête locale, ~0 coût).
-    if p.en_partie() && etat.file_gameflow.is_none() {
+    // Retour au salon / client au repos : la partie précédente est finie (une partie
+    // TFT, sans champ select, ne doit pas hériter de la file ni du mode Arena).
+    if matches!(p, Phase::Lobby | Phase::Aucune) {
+        etat.file_gameflow = None;
+        etat.sans_equipes = false;
+    }
+    // File de la partie, lue une fois (1 requête locale, ~0 coût) : au début de la
+    // partie, ou en fin de partie si le client était fermé au démarrage.
+    let fin = matches!(p, Phase::WaitingForStats | Phase::PreEndOfGame | Phase::EndOfGame);
+    if (p.en_partie() || fin) && etat.file_gameflow.is_none() {
         etat.file_gameflow = lire_file(etat);
     }
     // Fin de partie : on récupère la partie chez Riot (historique + récap + LP).
@@ -372,7 +380,10 @@ fn changer_compte(etat: &mut Etat, puuid: Box<str>, summoner_id: Option<u64>, tx
         etat.cs = SuiviChampSelect::default();
         etat.cs_en_attente = None;
         etat.partie_scoutee = false;
+        etat.file_gameflow = None;
+        etat.sans_equipes = false;
         affichage::modifier(|e| {
+            e.sans_equipes = false;
             e.champ_select = None;
             e.rangs.clear();
             e.partie = None;
@@ -560,10 +571,10 @@ fn noter_sans_equipes(etat: &mut Etat, mode_live: Option<&str>) {
     let arena_file = crate::rangs::file_partie()
         .or(etat.file_gameflow)
         .is_some_and(|f| crate::historique::famille(f) == crate::historique::Famille::Arena);
-    if (arena_file || mode_live == Some("CHERRY")) && !etat.sans_equipes {
-        etat.sans_equipes = true;
-        affichage::modifier(|e| e.sans_equipes = true);
-    }
+    etat.sans_equipes |= arena_file || mode_live == Some("CHERRY");
+    // Publié dans les deux sens : une partie normale après une Arena repasse en équipes.
+    let valeur = etat.sans_equipes;
+    affichage::modifier(|e| e.sans_equipes = valeur);
 }
 
 fn afficher_rangs(d: &DonneesJeu, joueurs: &[InfoJoueur], sans_equipes: bool) {

@@ -58,7 +58,9 @@ pub fn lire(session: &Value) -> Option<ChampSelect> {
         .map(|j| Allie {
             champion: champion_de(j),
             role: texte(&j["assignedPosition"]),
-            puuid: texte(&j["puuid"]),
+            // Second garde-fou : un joueur dont le client masque le nom n'a pas de puuid
+            // utilisable, même si le champ n'est pas vide.
+            puuid: if j["nameVisibilityType"] == "HIDDEN" { None } else { texte(&j["puuid"]) },
             moi: j["cellId"].as_i64() == Some(ma_case),
         })
         .collect();
@@ -113,6 +115,19 @@ mod tests {
         // Partie classée : identité des alliés cachée -> pas de puuid inventé.
         assert!(cs.allies[0].puuid.is_none());
         assert_eq!(cs.allies[1].puuid.as_deref(), Some("moi-puuid"));
+    }
+
+    #[test]
+    fn identite_masquee_jamais_gardee() {
+        let session: Value = serde_json::from_str(
+            r#"{"localPlayerCellId":0,"myTeam":[
+                {"cellId":0,"championId":1,"puuid":"p-moi"},
+                {"cellId":1,"championId":2,"puuid":"p-cache","nameVisibilityType":"HIDDEN"}]}"#,
+        )
+        .unwrap();
+        let cs = lire(&session).unwrap();
+        assert_eq!(cs.allies[0].puuid.as_deref(), Some("p-moi"));
+        assert!(cs.allies[1].puuid.is_none());
     }
 
     #[test]

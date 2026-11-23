@@ -200,8 +200,9 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     if p == Phase::ChampSelect {
         etat.cs = SuiviChampSelect::default();
         etat.partie_scoutee = false;
-        etat.file_gameflow = None;
         etat.sans_equipes = false;
+        // File du champ select (1 requête locale) : sert au garde-fou « classée ».
+        etat.file_gameflow = lire_file(etat);
         crate::rangs::oublier_partie();
         // Les joueurs de la partie PRÉCÉDENTE ne sont plus « de la partie » : on retire
         // leur autorisation de fiche (on la garde après la partie pour consulter leur fiche).
@@ -216,8 +217,7 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     affichage::modifier(|e| e.phase = Some(p));
     // File de la partie, lue une fois au début (1 requête locale, ~0 coût).
     if p.en_partie() && etat.file_gameflow.is_none() {
-        etat.file_gameflow =
-            etat.lcu.as_ref().and_then(|l| l.get("/lol-gameflow/v1/session")).and_then(|s| crate::gameflow::file_depuis_session(&s));
+        etat.file_gameflow = lire_file(etat);
     }
     // Fin de partie : on récupère la partie chez Riot (historique + récap + LP).
     // Synchro seulement pour une partie officielle (une personnalisée ou l'outil
@@ -285,6 +285,11 @@ fn scouter_si_besoin(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
             crate::rangs::scouter_partie(api, riot.to_string(), etat.session_compte, tx.clone());
         }
     }
+}
+
+/// File de la partie selon le client (/lol-gameflow/v1/session). 1 requête locale.
+fn lire_file(etat: &Etat) -> Option<u16> {
+    etat.lcu.as_ref().and_then(|l| l.get("/lol-gameflow/v1/session")).and_then(|s| crate::gameflow::file_depuis_session(&s))
 }
 
 /// Mon puuid au format de l'API Riot (voir lcu/identite.rs : le client donne un puuid
@@ -426,7 +431,9 @@ fn champ_select(etat: &mut Etat, d: &DonneesJeu, cs: ChampSelect, tx: &Sender<Ev
     }
 
     // 4. Rangs des alliés : seulement si le client donne leur identité (hors classé).
-    if !etat.cs.rangs_demandes {
+    // Deux garde-fous : puuid absent / nom masqué (champselect.rs) ET file classée.
+    let classee = matches!(etat.file_gameflow, Some(420 | 440));
+    if !etat.cs.rangs_demandes && !classee {
         if let Some(api) = &etat.api {
             let connus: Vec<(String, u16, bool)> =
                 cs.allies.iter().filter_map(|a| a.puuid.as_ref().map(|p| (p.to_string(), a.champion, a.moi))).collect();

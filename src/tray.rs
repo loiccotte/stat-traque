@@ -292,10 +292,16 @@ mod windows_impl {
     /// arrête l'app (avec la console du terminal, Windows n'attend pas l'app et
     /// Ctrl+C ne l'arrêtait pas).
     pub fn nouvelle_console() {
-        use windows_sys::Win32::System::Console::{AllocConsole, FreeConsole};
+        use windows_sys::Win32::System::Console::{AllocConsole, FreeConsole, SetConsoleOutputCP};
+        // 65001 = UTF-8. Sans ça, une console Windows lit nos textes UTF-8 avec l'ancienne
+        // page de code (1252/850) : « indigo » accentué devient « indÃ¬go ».
+        // Sans risque ici : c'est NOTRE console (créée par AllocConsole), pas celle du
+        // terminal de l'utilisateur. Coût : un appel système au démarrage, 0 RAM.
+        const UTF8: u32 = 65001;
         unsafe {
             FreeConsole();
             AllocConsole();
+            SetConsoleOutputCP(UTF8);
         }
     }
 

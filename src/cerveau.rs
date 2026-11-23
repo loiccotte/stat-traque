@@ -66,6 +66,8 @@ struct Etat {
     /// File de la partie lue dans /lol-gameflow/v1/session (source locale, au début de
     /// la partie) : permet le récap même si spectator-v5 a échoué.
     file_gameflow: Option<u16>,
+    /// Arena (CHERRY) : pas d'équipes fiables à afficher.
+    sans_equipes: bool,
     /// Numéro du compte connecté : +1 à chaque changement de compte. Les recherches de
     /// rangs le reçoivent et le renvoient ; un résultat d'un ancien numéro est ignoré.
     session_compte: u32,
@@ -92,6 +94,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
         cs_en_attente: None,
         partie_scoutee: false,
         file_gameflow: None,
+        sans_equipes: false,
         session_compte: 0,
         suivi: None,
         mon_summoner_id: None,
@@ -134,14 +137,16 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
             // Recherche lancée pour un compte précédent : résultat périmé, ignoré.
             Evenement::Rangs { session, .. } if session != etat.session_compte => {}
             Evenement::Rangs { joueurs, .. } => {
+                noter_sans_equipes(&mut etat, None);
                 if let Some(d) = &etat.donnees {
-                    afficher_rangs(d, &joueurs);
+                    afficher_rangs(d, &joueurs, etat.sans_equipes);
                 }
                 affichage::modifier(|e| e.rangs = joueurs);
             }
             Evenement::Partie(p) => {
+                noter_sans_equipes(&mut etat, Some(&p.mode));
                 if etat.mode != Mode::Tray {
-                    afficher_partie(&p);
+                    afficher_partie(&p, etat.sans_equipes);
                 }
                 affichage::modifier(|e| e.partie = Some(p));
             }
@@ -168,6 +173,7 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         etat.cs = SuiviChampSelect::default();
         etat.partie_scoutee = false;
         etat.file_gameflow = None;
+        etat.sans_equipes = false;
         crate::rangs::oublier_partie();
         // Les joueurs de la partie PRÉCÉDENTE ne sont plus « de la partie » : on retire
         // leur autorisation de fiche (on la garde après la partie pour consulter leur fiche).
@@ -175,6 +181,7 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         affichage::modifier(|e| {
             e.champ_select = Some(VueChampSelect::default());
             e.rangs.clear();
+            e.sans_equipes = false;
             e.partie = None;
         });
     }
@@ -475,12 +482,31 @@ fn runes(etat: &Etat, d: &DonneesJeu, champion: u16, role: Option<&str>) {
     });
 }
 
-fn afficher_rangs(d: &DonneesJeu, joueurs: &[InfoJoueur]) {
+/// Arena (mode CHERRY, files 1700/1710/1750) : l'API live et spectator ne donnent pas
+/// les trios de façon fiable (tout le monde « ORDER » ou bleu, ou un mélange) : on
+/// n'affiche alors aucune couleur d'équipe. `mode_live` = gameMode du port 2999.
+fn noter_sans_equipes(etat: &mut Etat, mode_live: Option<&str>) {
+    let arena_file = crate::rangs::file_partie()
+        .or(etat.file_gameflow)
+        .is_some_and(|f| crate::historique::famille(f) == crate::historique::Famille::Arena);
+    if (arena_file || mode_live == Some("CHERRY")) && !etat.sans_equipes {
+        etat.sans_equipes = true;
+        affichage::modifier(|e| e.sans_equipes = true);
+    }
+}
+
+fn afficher_rangs(d: &DonneesJeu, joueurs: &[InfoJoueur], sans_equipes: bool) {
     let mut joueurs = joueurs.to_vec();
-    joueurs.sort_by_key(|j| !j.bleu);
+    if !sans_equipes {
+        joueurs.sort_by_key(|j| !j.bleu);
+    }
     log!("--- Rangs ---");
     for j in &joueurs {
-        let equipe = if j.bleu { "BLEU " } else { "ROUGE" };
+        let equipe = match (sans_equipes, j.bleu) {
+            (true, _) => "     ",
+            (false, true) => "BLEU ",
+            (false, false) => "ROUGE",
+        };
         let solo = j.solo.as_ref().map_or("non classé".into(), |r| {
             format!("{r} ({:.0} % sur {}){}", r.winrate(), r.victoires + r.defaites, if r.serie { " en série" } else { "" })
         });
@@ -500,10 +526,14 @@ fn afficher_rangs(d: &DonneesJeu, joueurs: &[InfoJoueur]) {
     }
 }
 
-fn afficher_partie(p: &InstantanePartie) {
+fn afficher_partie(p: &InstantanePartie, sans_equipes: bool) {
     println!("\n--- Partie {} | {}:{:02} ---", p.mode, p.secondes / 60, p.secondes % 60);
     for j in &p.joueurs {
-        let equipe = if j.bleu { "BLEU" } else { "ROUGE" };
+        let equipe = match (sans_equipes, j.bleu) {
+            (true, _) => "",
+            (false, true) => "BLEU",
+            (false, false) => "ROUGE",
+        };
         println!(
             "{equipe:<6} {:<14} niv {:>2}  {}/{}/{}  {:>3} cs  {}",
             j.champion, j.niveau, j.kills, j.morts, j.assists, j.cs, j.pseudo

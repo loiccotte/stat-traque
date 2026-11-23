@@ -408,11 +408,8 @@ fn dessiner_partie(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJe
         return false;
     }
     if !etat.rangs.is_empty() {
-        let (bleus, rouges) = format::par_equipe(&etat.rangs);
-        for (titre, couleur, joueurs) in [("Équipe bleue", theme::EQUIPE_BLEUE, bleus), ("Équipe rouge", theme::EQUIPE_ROUGE, rouges)] {
-            if joueurs.is_empty() {
-                continue;
-            }
+        for (groupe, joueurs) in format::groupes(&etat.rangs, etat.sans_equipes, |j| j.bleu) {
+            let (titre, couleur) = (groupe.titre(), couleur_groupe(groupe));
             theme::carte().show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.label(RichText::new(titre).color(couleur).strong().size(16.0));
@@ -425,7 +422,7 @@ fn dessiner_partie(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJe
         theme::carte().show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             theme::titre(ui, &format!("En direct · {} · {}", p.mode, format::duree(p.secondes)));
-            tableau_live(ui, p, donnees);
+            tableau_live(ui, p, donnees, etat.sans_equipes);
         });
     }
     demandee
@@ -484,14 +481,24 @@ fn tableau_rangs(ui: &mut Ui, id: &str, joueurs: &[&InfoJoueur], cibles: &[VueCi
     demandee
 }
 
-fn tableau_live(ui: &mut Ui, p: &InstantanePartie, donnees: Option<&DonneesJeu>) {
-    let (bleus, rouges): (Vec<&JoueurLive>, Vec<&JoueurLive>) = p.joueurs.iter().partition(|j| j.bleu);
+/// Couleur du titre / des champions d'un groupe (neutre en Arena).
+fn couleur_groupe(groupe: format::Groupe) -> egui::Color32 {
+    match groupe {
+        format::Groupe::Bleue => theme::EQUIPE_BLEUE,
+        format::Groupe::Rouge => theme::EQUIPE_ROUGE,
+        format::Groupe::Tous => theme::TEXTE,
+    }
+}
+
+fn tableau_live(ui: &mut Ui, p: &InstantanePartie, donnees: Option<&DonneesJeu>, sans_equipes: bool) {
+    let groupes = format::groupes(&p.joueurs, sans_equipes, |j: &JoueurLive| j.bleu);
     egui::Grid::new("live").num_columns(6).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
         for entete in ["Champion", "Joueur", "Niv.", "KDA", "CS", "Objets"] {
             ui.label(RichText::new(entete).color(theme::TEXTE_DOUX).small());
         }
         ui.end_row();
-        for (couleur, joueurs) in [(theme::EQUIPE_BLEUE, bleus), (theme::EQUIPE_ROUGE, rouges)] {
+        for (groupe, joueurs) in groupes {
+            let couleur = couleur_groupe(groupe);
             for j in joueurs {
                 ui.label(RichText::new(&*j.champion).color(couleur).strong());
                 ui.label(&*j.pseudo);

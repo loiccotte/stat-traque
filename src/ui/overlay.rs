@@ -34,11 +34,20 @@ pub fn dessiner(ui: &mut Ui, etat: &EtatAffichage) {
                 return;
             }
             let donnees = etat.donnees.as_deref();
-            let (bleus, rouges) = format::par_equipe(&etat.rangs);
             ui.horizontal_top(|ui| {
-                equipe(ui, "bleus", theme::EQUIPE_BLEUE, &bleus, donnees);
-                ui.add_space(10.0);
-                equipe(ui, "rouges", theme::EQUIPE_ROUGE, &rouges, donnees);
+                if etat.sans_equipes {
+                    // Arena : deux colonnes dans l'ordre reçu, sans couleur d'équipe.
+                    let tous: Vec<&InfoJoueur> = etat.rangs.iter().collect();
+                    let (a, b) = tous.split_at(tous.len().div_ceil(2));
+                    equipe(ui, "joueurs-a", theme::TEXTE, a, donnees);
+                    ui.add_space(10.0);
+                    equipe(ui, "joueurs-b", theme::TEXTE, b, donnees);
+                } else {
+                    let (bleus, rouges): (Vec<&InfoJoueur>, Vec<&InfoJoueur>) = etat.rangs.iter().partition(|j| j.bleu);
+                    equipe(ui, "bleus", theme::EQUIPE_BLEUE, &bleus, donnees);
+                    ui.add_space(10.0);
+                    equipe(ui, "rouges", theme::EQUIPE_ROUGE, &rouges, donnees);
+                }
             });
         });
     });

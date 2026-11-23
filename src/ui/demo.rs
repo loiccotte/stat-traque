@@ -88,6 +88,7 @@ pub fn etat(phase: Phase) -> EtatAffichage {
     let historique = historique();
     EtatAffichage {
         phase: Some(phase),
+        sans_equipes: false,
         client_connecte: true,
         cle_api: true,
         champ_select: Some(VueChampSelect {

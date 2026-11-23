@@ -476,7 +476,7 @@ pub fn scouter_allies(
                     let (api, lcu) = (&api, lcu.as_ref());
                     s.spawn(move || -> Option<Joueur> {
                         let (puuid_riot, nom) = match lcu {
-                            Some(l) => match crate::lcu::identite::convertir(l, api, puuid) {
+                            Some(l) => match crate::lcu::identite::convertir(&crate::lcu::identite::Reelle { lcu: l, api }, puuid) {
                                 Ok(id) => (id.puuid, id.riot_id),
                                 Err(e) => {
                                     crate::log!("Allié ignoré (identité non convertie) : {e}");

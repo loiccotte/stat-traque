@@ -30,6 +30,9 @@ pub enum Evenement {
     /// Mon compte (lu au client à la connexion) : sert à trouver ma partie en cours.
     /// `summoner_id` : sert aux item sets du client (`/lol-item-sets/v1/item-sets/{id}/sets`).
     Moi { puuid: Box<str>, summoner_id: Option<u64> },
+    /// Conversion de mon puuid client -> puuid Riot terminée (thread à part).
+    /// `session` : compte pour lequel elle a été lancée ; `puuid` None = échec.
+    MonPuuidRiot { session: u32, puuid: Option<Box<str>> },
     /// Rangs des joueurs (alliés en champ select non classé, ou les 10 en partie).
     /// `session` : numéro du compte pour lequel la recherche a été lancée (voir
     /// `cerveau::changer_compte`) ; un résultat arrivé après un changement de compte est ignoré.

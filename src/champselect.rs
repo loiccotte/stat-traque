@@ -71,11 +71,23 @@ pub fn lire(session: &Value) -> Option<ChampSelect> {
         .filter(|&id| id != 0)
         .map(|id| id as u16)
         .collect();
+    // Mes actions de pick (un tour de draft = une liste d'actions).
+    let mes_picks: Vec<&Value> = session["actions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|tour| tour.as_array().into_iter().flatten())
+        .filter(|a| a["actorCellId"].as_i64() == Some(ma_case) && a["type"] == "pick")
+        .collect();
     // Verrouillé = une action "pick" de ma case est terminée.
-    let verrouille = session["actions"].as_array().into_iter().flatten().flat_map(|tour| tour.as_array().into_iter().flatten()).any(|a| {
-        a["actorCellId"].as_i64() == Some(ma_case) && a["type"] == "pick" && a["completed"] == true
-    });
-    Some(ChampSelect { champion: moi.champion, role: moi.role.clone(), verrouille, ennemis, allies })
+    let verrouille = mes_picks.iter().any(|a| a["completed"] == true);
+    // Observé en vrai : pendant le simple SURVOL, le champion n'est ni dans
+    // /current-champion (0) ni forcément dans myTeam ; il est dans actions[].championId.
+    let champion = match moi.champion {
+        0 => mes_picks.iter().filter_map(|a| a["championId"].as_u64()).find(|&id| id != 0).unwrap_or(0) as u16,
+        c => c,
+    };
+    Some(ChampSelect { champion, role: moi.role.clone(), verrouille, ennemis, allies })
 }
 
 #[cfg(test)]
@@ -101,6 +113,18 @@ mod tests {
         // Partie classée : identité des alliés cachée -> pas de puuid inventé.
         assert!(cs.allies[0].puuid.is_none());
         assert_eq!(cs.allies[1].puuid.as_deref(), Some("moi-puuid"));
+    }
+
+    #[test]
+    fn survol_lu_dans_les_actions() {
+        // myTeam ne donne rien (0), le survol n'est que dans l'action de pick en cours.
+        let session: Value = serde_json::from_str(
+            r#"{"localPlayerCellId":0,"myTeam":[{"cellId":0,"championId":0,"championPickIntent":0}],
+                "actions":[[{"actorCellId":0,"type":"pick","completed":false,"championId":157}]]}"#,
+        )
+        .unwrap();
+        let cs = lire(&session).unwrap();
+        assert_eq!((cs.champion, cs.verrouille), (157, false));
     }
 
     #[test]

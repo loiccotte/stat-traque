@@ -238,27 +238,24 @@ fn scouter_si_besoin(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     }
 }
 
-/// Mon puuid au format de l'API Riot, converti une seule fois puis gardé en mémoire.
-/// Le client LoL donne un puuid de 36 caractères ; Riot en attend un de 78 (sinon
-/// « 400 Bad Request - Exception decrypting »). On demande donc mon Riot ID au client
-/// (`gameName` + `tagLine`), puis le vrai puuid à account-v1 (réponse gardée 24 h en cache).
+/// Mon puuid au format de l'API Riot, converti une seule fois puis gardé en mémoire
+/// (voir lcu/identite.rs : le client donne un puuid de 36 caractères, Riot en attend 78).
 /// Renvoie `None` si on ne peut pas encore le savoir (pas de clé API, client absent...).
+/// Bloquant (réseau) mais une seule fois par compte : le résultat reste en mémoire.
 fn puuid_pour_api(etat: &mut Etat) -> Option<Box<str>> {
     if let Some(deja) = &etat.mon_puuid_riot {
         return Some(deja.clone());
     }
     let client = etat.mon_puuid.clone()?;
-    if client.len() >= 70 {
-        // Déjà au format Riot (ancien client, rejeu...) : rien à convertir.
+    if crate::lcu::identite::est_puuid_riot(&client) {
+        // Déjà au format Riot (rejeu, ancien client) : rien à convertir.
         etat.mon_puuid_riot = Some(client);
         return etat.mon_puuid_riot.clone();
     }
     let (lcu, api) = (etat.lcu.as_ref()?, etat.api.as_ref()?);
-    let infos = lcu.get(&format!("/lol-summoner/v2/summoners/puuid/{client}"))?;
-    let (nom, tag) = (infos["gameName"].as_str()?, infos["tagLine"].as_str()?);
-    match api.compte(nom, tag) {
-        Ok(compte) => {
-            let riot: Box<str> = compte["puuid"].as_str()?.into();
+    match crate::lcu::identite::convertir(lcu, api, &client) {
+        Ok(id) => {
+            let riot: Box<str> = id.puuid.into();
             etat.mon_puuid_riot = Some(riot.clone());
             Some(riot)
         }

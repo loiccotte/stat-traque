@@ -285,8 +285,8 @@ mod tests {
     fn la_demo_est_complete() {
         let e = etat(Phase::InProgress);
         assert_eq!(e.rangs.len(), 10);
-        let (bleus, rouges) = format::par_equipe(&e.rangs);
-        assert_eq!((bleus.len(), rouges.len()), (5, 5));
+        let groupes = format::groupes(&e.rangs, false, |j| j.bleu);
+        assert_eq!(groupes.iter().map(|(_, j)| j.len()).collect::<Vec<_>>(), [5, 5]);
         let d = e.donnees.as_deref();
         assert_eq!(format::nom_champion(d, 62), "Wukong");
         assert_eq!(format::nom_depuis_id_dd(d, "MonkeyKing"), "Wukong");

@@ -181,12 +181,6 @@ pub fn fraction(valeur: f32, max: f32) -> f32 {
     (valeur / max).clamp(0.0, 1.0)
 }
 
-/// Les deux équipes, bleue d'abord, chacune dans l'ordre reçu.
-#[cfg(test)]
-pub fn par_equipe(joueurs: &[InfoJoueur]) -> (Vec<&InfoJoueur>, Vec<&InfoJoueur>) {
-    joueurs.iter().partition(|j| j.bleu)
-}
-
 /// Un groupe de joueurs à afficher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Groupe {
@@ -240,6 +234,14 @@ pub fn borner_position([x, y]: [f32; 2], (ex, ey, largeur, hauteur): (i32, i32, 
     const VISIBLE: i32 = 40;
     let borne = |v: f32, debut: i32, taille: i32| (v as i32).clamp(debut, debut + (taille - VISIBLE).max(0));
     (borne(x, ex, largeur), borne(y, ey, hauteur))
+}
+
+/// Arena : les joueurs répartis en deux colonnes dans l'ordre reçu (1re moitié à
+/// gauche, 2e à droite). Utilisée par les DEUX overlays (natif et egui) pour qu'ils
+/// montrent le même ordre.
+pub fn colonnes_arena<T>(joueurs: &[T]) -> (Vec<&T>, Vec<&T>) {
+    let (a, b) = joueurs.split_at(joueurs.len().div_ceil(2));
+    (a.iter().collect(), b.iter().collect())
 }
 
 /// Une case de l'overlay : texte + couleur (rouge, vert, bleu).
@@ -300,7 +302,8 @@ pub fn grille_overlay(rangs: &[InfoJoueur], donnees: Option<&DonneesJeu>, cle_ap
         ligne
     };
     if sans_equipes {
-        return rangs.chunks(2).map(|paire| ligne_de(paire.first(), paire.get(1))).collect();
+        let (a, b) = colonnes_arena(rangs);
+        return (0..a.len()).map(|i| ligne_de(a.get(i).copied(), b.get(i).copied())).collect();
     }
     let (bleus, rouges): (Vec<&InfoJoueur>, Vec<&InfoJoueur>) = rangs.iter().partition(|j| j.bleu);
     (0..bleus.len().max(rouges.len())).map(|i| ligne_de(bleus.get(i).copied(), rouges.get(i).copied())).collect()

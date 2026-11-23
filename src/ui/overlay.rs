@@ -37,11 +37,10 @@ pub fn dessiner(ui: &mut Ui, etat: &EtatAffichage) {
             ui.horizontal_top(|ui| {
                 if etat.sans_equipes {
                     // Arena : deux colonnes dans l'ordre reçu, sans couleur d'équipe.
-                    let tous: Vec<&InfoJoueur> = etat.rangs.iter().collect();
-                    let (a, b) = tous.split_at(tous.len().div_ceil(2));
-                    equipe(ui, "joueurs-a", theme::TEXTE, a, donnees);
+                    let (a, b) = format::colonnes_arena(&etat.rangs);
+                    equipe(ui, "joueurs-a", theme::TEXTE, &a, donnees);
                     ui.add_space(10.0);
-                    equipe(ui, "joueurs-b", theme::TEXTE, b, donnees);
+                    equipe(ui, "joueurs-b", theme::TEXTE, &b, donnees);
                 } else {
                     let (bleus, rouges): (Vec<&InfoJoueur>, Vec<&InfoJoueur>) = etat.rangs.iter().partition(|j| j.bleu);
                     equipe(ui, "bleus", theme::EQUIPE_BLEUE, &bleus, donnees);

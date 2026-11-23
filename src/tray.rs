@@ -293,8 +293,10 @@ mod windows_impl {
     /// Ctrl+C ne l'arrêtait pas).
     pub fn nouvelle_console() {
         use windows_sys::Win32::System::Console::{AllocConsole, FreeConsole, SetConsoleOutputCP};
-        // 65001 = UTF-8. Sans ça, une console Windows lit nos textes UTF-8 avec l'ancienne
-        // page de code (1252/850) : « indigo » accentué devient « indÃ¬go ».
+        // 65001 = UTF-8. Sans ça, la console peut lire nos textes UTF-8 avec l'ancienne
+        // page de code (1252 / 850) : « é » s'affiche « Ã© ». Constaté en vrai en
+        // --console ; la cause exacte reste à confirmer sous Windows (Rust écrit
+        // normalement en UTF-16 dans une vraie console), mais ce réglage est sans risque.
         // Sans risque ici : c'est NOTRE console (créée par AllocConsole), pas celle du
         // terminal de l'utilisateur. Coût : un appel système au démarrage, 0 RAM.
         const UTF8: u32 = 65001;

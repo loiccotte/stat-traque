@@ -391,6 +391,11 @@ fn participants_spectator(partie: &Value, mon_puuid: &str) -> (Vec<Joueur>, Vec<
         let bleu = p["teamId"] == 100;
         let puuid = p["puuid"].as_str().unwrap_or("").trim();
         let nom = p["riotId"].as_str().unwrap_or("").trim();
+        // Moi en mode streamer : je reste « moi » (mon nom m'est connu, rien de dévoilé).
+        if !puuid.is_empty() && puuid == mon_puuid {
+            joueurs.push((puuid.to_string(), if nom.is_empty() { "Moi".into() } else { nom.to_string() }, champion, bleu, true));
+            continue;
+        }
         if puuid.is_empty() || nom.is_empty() {
             masques.push(InfoJoueur {
                 nom: crate::live::PSEUDO_MASQUE.into(),
@@ -518,6 +523,10 @@ mod tests {
         assert_eq!(joueurs.len(), 1);
         assert!(joueurs[0].4, "moi reconnu");
         assert_eq!(masques.len(), 2);
+        // Moi-même en mode streamer (riotId vide) : toujours « moi », pas masqué.
+        let (joueurs, masques) = participants_spectator(&partie, "p-2");
+        assert!(joueurs.iter().any(|j| j.0 == "p-2" && j.4));
+        assert_eq!(masques.len(), 1);
         assert!(masques.iter().all(|m| &*m.nom == crate::live::PSEUDO_MASQUE && m.solo.is_none()));
     }
 

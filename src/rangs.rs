@@ -381,6 +381,35 @@ fn infos_paralleles(
     })
 }
 
+/// Participants spectator-v5 : (joueurs à rechercher, joueurs masqués à afficher tels quels).
+/// Un joueur sans puuid ou sans Riot ID (mode streamer) n'est jamais recherché.
+fn participants_spectator(partie: &Value, mon_puuid: &str) -> (Vec<Joueur>, Vec<InfoJoueur>) {
+    let mut joueurs = Vec::new();
+    let mut masques = Vec::new();
+    for p in partie["participants"].as_array().into_iter().flatten() {
+        let champion = p["championId"].as_u64().unwrap_or(0) as u16;
+        let bleu = p["teamId"] == 100;
+        let puuid = p["puuid"].as_str().unwrap_or("").trim();
+        let nom = p["riotId"].as_str().unwrap_or("").trim();
+        if puuid.is_empty() || nom.is_empty() {
+            masques.push(InfoJoueur {
+                nom: crate::live::PSEUDO_MASQUE.into(),
+                champion,
+                bleu,
+                moi: false,
+                solo: None,
+                flex: None,
+                meilleur: None,
+                maitrise: None,
+                badges: Vec::new(),
+            });
+        } else {
+            joueurs.push((puuid.to_string(), nom.to_string(), champion, bleu, puuid == mon_puuid));
+        }
+    }
+    (joueurs, masques)
+}
+
 /// En partie : les 10 joueurs via spectator-v5. Lancé dans un thread à part.
 /// `session` est renvoyée telle quelle avec le résultat (le cerveau ignore les résultats périmés).
 pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, session: u32, tx: Sender<Evenement>) {
@@ -395,17 +424,9 @@ pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, session: u32, tx: Se
                 return;
             }
         };
-        let joueurs: Vec<_> = partie["participants"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|p| {
-                let puuid = p["puuid"].as_str()?.to_string();
-                let nom = p["riotId"].as_str().unwrap_or("?").to_string();
-                let moi = puuid == mon_puuid;
-                Some((puuid, nom, p["championId"].as_u64().unwrap_or(0) as u16, p["teamId"] == 100, moi))
-            })
-            .collect();
+        // Joueurs en mode streamer (Riot ID ou puuid vide) : gardés dans la liste avec
+        // « (pseudo masqué) » mais JAMAIS recherchés (aucune requête, pas de fiche).
+        let (joueurs, masques) = participants_spectator(&partie, &mon_puuid);
         // Ces joueurs sont connus officiellement (spectator) : leur fiche peut être demandée.
         crate::fiche::autoriser(joueurs.iter().map(|(p, n, c, _, _)| (p.clone(), n.clone(), *c)).collect());
         let file = file_spectator(&partie);
@@ -414,7 +435,7 @@ pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, session: u32, tx: Se
         // Groupes (duos / premades) à partir des parties récentes en commun.
         let entrees: Vec<(bool, &[String])> = resultats.iter().map(|(j, ids)| (j.bleu, ids.as_slice())).collect();
         let numeros = groupes(&entrees);
-        let infos: Vec<InfoJoueur> = resultats
+        let mut infos: Vec<InfoJoueur> = resultats
             .into_iter()
             .zip(numeros)
             .map(|((mut j, _), groupe)| {
@@ -424,6 +445,7 @@ pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, session: u32, tx: Se
                 j
             })
             .collect();
+        infos.extend(masques);
         crate::log!("Rangs : {} (mesuré pour cette partie).", crate::riot_api::Compteurs::depuis(avant));
         let _ = tx.send(Evenement::Rangs { session, joueurs: infos });
     });
@@ -482,6 +504,22 @@ pub fn scouter_allies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joueur_masque_garde_mais_jamais_recherche() {
+        let partie: Value = serde_json::from_str(
+            r#"{"participants":[
+                {"puuid":"p-moi","riotId":"Moi#EUW","championId":238,"teamId":100},
+                {"puuid":"","riotId":"","championId":893,"teamId":100},
+                {"puuid":"p-2","riotId":"","championId":103,"teamId":200}]}"#,
+        )
+        .unwrap();
+        let (joueurs, masques) = participants_spectator(&partie, "p-moi");
+        assert_eq!(joueurs.len(), 1);
+        assert!(joueurs[0].4, "moi reconnu");
+        assert_eq!(masques.len(), 2);
+        assert!(masques.iter().all(|m| &*m.nom == crate::live::PSEUDO_MASQUE && m.solo.is_none()));
+    }
 
     #[test]
     fn lit_et_compare_les_rangs() {

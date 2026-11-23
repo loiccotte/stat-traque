@@ -2,6 +2,7 @@
 
 Alternative à Blitz pour League of Legends, en Rust, **très optimisée**.
 Méthode de travail multi-agents : voir `docs/METHODE.md`. Features : `docs/FEATURES.md`.
+Faits observés sur le client, le jeu et l'API Riot : `docs/FONCTIONNEMENT.md`.
 
 ## Budgets de performance (non négociables)
 Priorité : **RAM et CPU** (fluidité, rien qui ralentit le jeu). La taille de l'exe est secondaire.

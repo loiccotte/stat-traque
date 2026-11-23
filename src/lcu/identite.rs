@@ -31,7 +31,6 @@ pub fn riot_id(reponse: &Value) -> Option<(&str, &str)> {
 /// Résultat d'une conversion : le puuid Riot et le Riot ID « Pseudo#TAG ».
 pub struct Identite {
     pub puuid: String,
-    #[allow(dead_code)] // utilisé par le scouting des alliés (commit suivant)
     pub riot_id: String,
 }
 

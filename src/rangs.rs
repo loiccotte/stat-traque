@@ -430,9 +430,50 @@ pub fn scouter_partie(api: Arc<RiotApi>, mon_puuid: String, session: u32, tx: Se
 }
 
 /// Champ select non classé : rangs des alliés dont le client donne le puuid.
-pub fn scouter_allies(api: Arc<RiotApi>, allies: Vec<(String, u16, bool)>, session: u32, tx: Sender<Evenement>) {
+///
+/// Conformité Riot : on n'est appelé QUE si le client donne déjà l'identité des alliés
+/// (hors partie classée, où elle est masquée). On ne cherche jamais à la deviner.
+///
+/// Le client donne des puuids courts (36 caractères) que l'API Riot refuse : chaque allié
+/// est d'abord converti (lcu/identite.rs : 1 requête locale + account-v1, en cache 24 h,
+/// via le limiteur global). Tout se passe dans CE thread, jamais dans celui du cerveau.
+/// Coût : ≤ 5 conversions (une fois par joueur et par 24 h) + 2 requêtes par allié.
+pub fn scouter_allies(
+    api: Arc<RiotApi>,
+    lcu: Option<crate::lcu::Lcu>,
+    allies: Vec<(String, u16, bool)>,
+    session: u32,
+    tx: Sender<Evenement>,
+) {
     std::thread::spawn(move || {
-        let joueurs: Vec<_> = allies.into_iter().map(|(p, c, moi)| (p, String::from("allié"), c, true, moi)).collect();
+        // Conversion en parallèle (le limiteur global garde les limites de la clé).
+        let joueurs: Vec<Joueur> = std::thread::scope(|s| {
+            let fils: Vec<_> = allies
+                .iter()
+                .map(|(puuid, champion, moi)| {
+                    let (api, lcu) = (&api, lcu.as_ref());
+                    s.spawn(move || -> Option<Joueur> {
+                        let (puuid_riot, nom) = match lcu {
+                            Some(l) => match crate::lcu::identite::convertir(l, api, puuid) {
+                                Ok(id) => (id.puuid, id.riot_id),
+                                Err(e) => {
+                                    crate::log!("Allié ignoré (identité non convertie) : {e}");
+                                    return None;
+                                }
+                            },
+                            // Sans client (rejeu) : seulement si le puuid est déjà au format Riot.
+                            None if crate::lcu::identite::est_puuid_riot(puuid) => (puuid.clone(), "allié".into()),
+                            None => return None,
+                        };
+                        Some((puuid_riot, nom, *champion, true, *moi))
+                    })
+                })
+                .collect();
+            fils.into_iter().filter_map(|f| f.join().ok().flatten()).collect()
+        });
+        if joueurs.is_empty() {
+            return;
+        }
         let infos = infos_paralleles(&api, &joueurs, false, None).into_iter().map(|(j, _)| j).collect();
         let _ = tx.send(Evenement::Rangs { session, joueurs: infos });
     });

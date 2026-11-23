@@ -349,7 +349,7 @@ fn champ_select(etat: &mut Etat, d: &DonneesJeu, cs: ChampSelect, tx: &Sender<Ev
                 cs.allies.iter().filter_map(|a| a.puuid.as_ref().map(|p| (p.to_string(), a.champion, a.moi))).collect();
             if connus.len() > 1 {
                 etat.cs.rangs_demandes = true;
-                crate::rangs::scouter_allies(api.clone(), connus, etat.session_compte, tx.clone());
+                crate::rangs::scouter_allies(api.clone(), etat.lcu.clone(), connus, etat.session_compte, tx.clone());
             }
         }
     }

@@ -56,9 +56,29 @@ impl Phase {
     }
 }
 
+/// File (queueId) de la partie d'après `/lol-gameflow/v1/session` du client :
+/// `gameData.queue.id`. None pour une partie personnalisée, l'outil d'entraînement
+/// (id ≤ 0) ou une réponse inattendue. Source LOCALE : marche même si spectator échoue.
+pub fn file_depuis_session(session: &serde_json::Value) -> Option<u16> {
+    let donnees = &session["gameData"];
+    if donnees["isCustomGame"] == true {
+        return None;
+    }
+    donnees["queue"]["id"].as_i64().filter(|id| *id > 0 && *id <= u16::MAX as i64).map(|id| id as u16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lit_la_file_de_la_session() {
+        let v = |t: &str| serde_json::from_str::<serde_json::Value>(t).unwrap();
+        assert_eq!(file_depuis_session(&v(r#"{"gameData":{"queue":{"id":1750,"gameMode":"CHERRY"}}}"#)), Some(1750));
+        assert_eq!(file_depuis_session(&v(r#"{"gameData":{"queue":{"id":-1}}}"#)), None);
+        assert_eq!(file_depuis_session(&v(r#"{"gameData":{"isCustomGame":true,"queue":{"id":0}}}"#)), None);
+        assert_eq!(file_depuis_session(&v("{}")), None);
+    }
 
     #[test]
     fn traduit_les_phases() {

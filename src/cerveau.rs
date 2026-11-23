@@ -63,6 +63,9 @@ struct Etat {
     /// Champ select reçu avant que Data Dragon soit prêt : traité après.
     cs_en_attente: Option<ChampSelect>,
     partie_scoutee: bool,
+    /// File de la partie lue dans /lol-gameflow/v1/session (source locale, au début de
+    /// la partie) : permet le récap même si spectator-v5 a échoué.
+    file_gameflow: Option<u16>,
     /// Numéro du compte connecté : +1 à chaque changement de compte. Les recherches de
     /// rangs le reçoivent et le renvoient ; un résultat d'un ancien numéro est ignoré.
     session_compte: u32,
@@ -88,6 +91,7 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
         cs: SuiviChampSelect::default(),
         cs_en_attente: None,
         partie_scoutee: false,
+        file_gameflow: None,
         session_compte: 0,
         suivi: None,
         mon_summoner_id: None,
@@ -163,6 +167,7 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     if p == Phase::ChampSelect {
         etat.cs = SuiviChampSelect::default();
         etat.partie_scoutee = false;
+        etat.file_gameflow = None;
         crate::rangs::oublier_partie();
         // Les joueurs de la partie PRÉCÉDENTE ne sont plus « de la partie » : on retire
         // leur autorisation de fiche (on la garde après la partie pour consulter leur fiche).
@@ -174,10 +179,17 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
         });
     }
     affichage::modifier(|e| e.phase = Some(p));
+    // File de la partie, lue une fois au début (1 requête locale, ~0 coût).
+    if p.en_partie() && etat.file_gameflow.is_none() {
+        etat.file_gameflow =
+            etat.lcu.as_ref().and_then(|l| l.get("/lol-gameflow/v1/session")).and_then(|s| crate::gameflow::file_depuis_session(&s));
+    }
     // Fin de partie : on récupère la partie chez Riot (historique + récap + LP).
-    // Seulement si spectator a trouvé une partie officielle : une partie personnalisée
-    // ou l'outil d'entraînement n'apparaîtront jamais dans match-v5 (requêtes inutiles).
-    if p == Phase::EndOfGame && crate::rangs::file_partie().is_some() {
+    // Synchro seulement pour une partie officielle (une personnalisée ou l'outil
+    // d'entraînement n'apparaîtront jamais dans match-v5 : requêtes inutiles).
+    // Spectator OU le client : une seule des deux sources suffit.
+    let file_connue = crate::rangs::file_partie().or(etat.file_gameflow);
+    if p == Phase::EndOfGame && file_connue.is_some() {
         if let (Some(api), Some(riot)) = (etat.api.clone(), puuid_pour_api(etat)) {
             crate::historique::lancer_synchro(api, riot, true, tx.clone());
         }

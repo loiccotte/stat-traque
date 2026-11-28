@@ -10,6 +10,7 @@
 //!   - image décodée 120x120 RGBA .... 57,6 Ko (120*120*4)
 //!   - tampon interne de `png` ....... quelques Ko (une ligne + fenêtre de décompression)
 //!   - résultat 48x48 RGBA ........... 9,2 Ko (96x96 : 36,9 Ko)
+//!
 //!   => ~60 Ko d'image à la pointe (~100 Ko en comptant le PNG), tout libéré ensuite.
 //!   Résident par icône conservée : 9,2 Ko (Ligne) ou 36,9 Ko (Fiche).
 //!   Plafonds en dur : entrée <= 200 Ko, côté <= 256 px => au plus 256 Ko de pixels.
@@ -116,11 +117,15 @@ pub fn decoder(png: &[u8], t: Taille) -> Option<Icone> {
     let rgba: Vec<u8> = match image.color_type {
         png::ColorType::Rgba => pixels.to_vec(),
         png::ColorType::Rgb => pixels
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect(),
         png::ColorType::GrayscaleAlpha => pixels
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[0], p[0], p[1]])
             .collect(),
         png::ColorType::Grayscale => pixels.iter().flat_map(|&g| [g, g, g, 255]).collect(),
@@ -173,14 +178,20 @@ pub fn reduire(rgba: &[u8], src: u32, dst: u32) -> Vec<u8> {
                 }
             }
             let nb = ((y1 - y0) * (x1 - x0)) as u64;
-            if a == 0 {
-                sortie.extend_from_slice(&[0, 0, 0, 0]);
-            } else {
-                // Arrondi au plus proche.
-                sortie.push(((r + a / 2) / a) as u8);
-                sortie.push(((g + a / 2) / a) as u8);
-                sortie.push(((b + a / 2) / a) as u8);
-                sortie.push(((a + nb / 2) / nb) as u8);
+            // Arrondi au plus proche ; si tout le bloc est transparent (a == 0), la
+            // division est impossible : on écrit un pixel transparent.
+            match (
+                (r + a / 2).checked_div(a),
+                (g + a / 2).checked_div(a),
+                (b + a / 2).checked_div(a),
+            ) {
+                (Some(r), Some(g), Some(b)) => {
+                    sortie.push(r as u8);
+                    sortie.push(g as u8);
+                    sortie.push(b as u8);
+                    sortie.push(((a + nb / 2) / nb) as u8);
+                }
+                _ => sortie.extend_from_slice(&[0, 0, 0, 0]),
             }
         }
     }

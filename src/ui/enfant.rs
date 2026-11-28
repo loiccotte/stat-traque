@@ -17,8 +17,10 @@ use eframe::egui;
 
 use super::ecrans::{self, Ecran};
 use super::protocole::{appliquer_message, ligne_demande, lire_message, meme_version, Demande, Message};
+use super::textures::{self, Portraits, PortraitsPartage};
 use super::{demo, format, overlay, theme};
 use crate::affichage::EtatAffichage;
+use crate::icones;
 
 /// Ce que le thread de lecture partage avec la fenêtre.
 #[derive(Default)]
@@ -207,7 +209,8 @@ pub fn lancer(overlay: bool) {
     } else {
         egui::ViewportBuilder::default()
             .with_title("stat-traque")
-            .with_inner_size([960.0, 680.0])
+            // 880x620 : 960x680 était coupée par la barre des tâches.
+            .with_inner_size([880.0, 620.0])
             .with_min_inner_size([640.0, 420.0])
     };
     let options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Glow, ..Default::default() };
@@ -217,7 +220,7 @@ pub fn lancer(overlay: bool) {
         Box::new(move |cc| {
             theme::appliquer(&cc.egui_ctx);
             let _ = CONTEXTE.set(cc.egui_ctx.clone());
-            Ok(Box::new(Appli::nouvelle(overlay)))
+            Ok(Box::new(Appli::nouvelle(&cc.egui_ctx, overlay)))
         }),
     );
     if let Err(e) = resultat {
@@ -231,14 +234,37 @@ struct Appli {
     etat: EtatAffichage,
     version: u64,
     ecran: Ecran,
+    /// Textures des portraits. Les écrans le retrouvent avec `textures::portraits(ctx)`.
+    portraits: PortraitsPartage,
+    /// Le ménage du cache d'icônes (anciens patchs) n'est lancé qu'une fois.
+    menage_fait: bool,
 }
 
 impl Appli {
-    fn nouvelle(overlay: bool) -> Self {
+    fn nouvelle(ctx: &egui::Context, overlay: bool) -> Self {
         let (etat, version) = partage(|p| (p.etat.clone(), p.version));
         let ecran = Ecran::nouveau(&etat);
-        Self { overlay, etat, version, ecran }
+        let portraits = textures::installer(ctx, Portraits::nouveau(ctx, version_patch(&etat)));
+        let mut appli = Self { overlay, etat, version, ecran, portraits, menage_fait: false };
+        appli.lancer_menage();
+        appli
     }
+
+    /// Prévient `Portraits` du patch courant et lance (une seule fois) le ménage
+    /// du cache d'icônes dans un thread : il ne doit jamais ralentir une trame.
+    fn lancer_menage(&mut self) {
+        let version = version_patch(&self.etat);
+        self.portraits.lock().unwrap().definir_version(version.clone());
+        if let (Some(v), false) = (version, self.menage_fait) {
+            self.menage_fait = true;
+            std::thread::spawn(move || icones::menage(&v));
+        }
+    }
+}
+
+/// Patch Data Dragon des données chargées (None tant qu'elles ne le sont pas).
+fn version_patch(etat: &EtatAffichage) -> Option<String> {
+    etat.donnees.as_ref().map(|d| d.version.clone()).filter(|v| !v.is_empty())
 }
 
 impl eframe::App for Appli {
@@ -274,12 +300,15 @@ impl eframe::App for Appli {
             self.etat = etat;
             self.version = version;
             self.ecran.etat_change(&self.etat);
+            self.lancer_menage(); // le patch est peut-être devenu connu
         }
         if self.overlay {
             overlay::dessiner(ui, &self.etat);
         } else {
             ecrans::dessiner(ui, &mut self.ecran, &self.etat);
         }
+        // Une fois par image : libère les textures de portraits en trop.
+        self.portraits.lock().unwrap().fin_de_trame();
     }
 
     /// Couleur de fond : opaque pour la fenêtre, transparente pour l'overlay.

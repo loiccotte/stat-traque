@@ -161,7 +161,13 @@ pub fn boucle(rx: Receiver<Evenement>, tx: Sender<Evenement>, mode: Mode) {
                 if etat.mode != Mode::Tray {
                     afficher_partie(&p, etat.sans_equipes);
                 }
-                affichage::modifier(|e| e.partie = Some(p));
+                // Mes chiffres pour la petite fenêtre : lus dans l'instantané déjà reçu
+                // (aucune requête de plus). Mon champion vient du champ select.
+                let vue = mon_champion(&etat).and_then(|nom| p.vue_moi(&nom, None));
+                affichage::modifier(|e| {
+                    e.live_moi = vue;
+                    e.partie = Some(p);
+                });
             }
             Evenement::Historique(maj) => crate::historique::publier(*maj, etat.donnees.as_deref()),
             Evenement::DemandeFiche { puuid } => demander_fiche(&etat, &puuid, &tx),
@@ -220,7 +226,14 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
             e.partie = None;
         });
     }
-    affichage::modifier(|e| e.phase = Some(p));
+    // Hors partie (fin, salon, champ select...) : mes chiffres en direct sont périmés.
+    let hors_partie = !p.en_partie();
+    affichage::modifier(|e| {
+        e.phase = Some(p);
+        if hors_partie {
+            e.live_moi = None;
+        }
+    });
     // Retour au salon / client au repos : la partie précédente est finie (une partie
     // TFT, sans champ select, ne doit pas hériter de la file ni du mode Arena).
     if matches!(p, Phase::Lobby | Phase::Aucune) {
@@ -248,6 +261,13 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     scouter_si_besoin(etat, p, tx);
     etat.phase = p;
     suivre_si_utile(etat, tx);
+}
+
+/// Nom de mon champion (choisi en champ select), pour me retrouver dans la liste du jeu.
+/// `None` si inconnu (client lancé en cours de partie, Data Dragon pas prêt...).
+fn mon_champion(etat: &Etat) -> Option<String> {
+    let cs = etat.cs.dernier.as_ref().filter(|c| c.champion != 0)?;
+    Some(etat.donnees.as_ref()?.nom_champion(cs.champion).to_string())
 }
 
 /// Le suivi de partie (port 2999) ne tourne QUE pendant la partie, et seulement
@@ -393,6 +413,7 @@ fn changer_compte(etat: &mut Etat, puuid: Box<str>, summoner_id: Option<u64>, tx
             e.champ_select = None;
             e.rangs.clear();
             e.partie = None;
+            e.live_moi = None;
             e.fiche = None;
         });
     }

@@ -51,6 +51,7 @@ mod metriques;
 mod note;
 mod rangs;
 mod rejeu;
+mod reperes;
 mod stats;
 mod riot_api;
 mod serde_statique;

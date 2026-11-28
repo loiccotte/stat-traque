@@ -3,13 +3,12 @@
 //! Tout vient de l'état déjà reçu (historique, rang, stats perso) : aucune requête
 //! réseau, aucune animation, rien ne redessine tant que l'état ne change pas.
 
-use std::sync::MutexGuard;
 
 use eframe::egui::{self, RichText, Ui};
 
 use super::composants::{self, TaillePortrait};
 use super::format;
-use super::textures::{self, Portraits};
+use super::textures::{self, PortraitsPartage};
 use super::theme;
 use crate::affichage::EtatAffichage;
 use crate::ddragon::DonneesJeu;
@@ -76,11 +75,11 @@ pub(super) fn note_de_partie(_p: &ResumePartie) -> Option<u8> {
 // =====================================================================
 
 /// Portrait si le gestionnaire de textures est disponible, sinon simple espace réservé.
-/// Le verrou est pris pour la durée de l'écran seulement, jamais gardé entre deux trames.
-fn portrait(ui: &mut Ui, p: &mut Option<MutexGuard<'_, Portraits>>, id_dd: Option<&str>, t: TaillePortrait) {
-    match p {
-        Some(p) => {
-            composants::portrait(ui, p, id_dd, None, t);
+/// Le verrou n'est pris que le temps de peindre CE portrait (comme les autres écrans).
+fn portrait(ui: &mut Ui, partage: &Option<PortraitsPartage>, id_dd: Option<&str>, t: TaillePortrait) {
+    match partage.as_ref().and_then(|p| p.lock().ok()) {
+        Some(mut p) => {
+            composants::portrait(ui, &mut p, id_dd, None, t);
         }
         None => {
             ui.allocate_space(egui::vec2(t.cote(), t.cote()));
@@ -96,17 +95,17 @@ fn id_dd(donnees: Option<&DonneesJeu>, champion: u16) -> Option<String> {
 /// Dessine l'accueil.
 pub(super) fn dessiner_accueil(ui: &mut Ui, etat: &EtatAffichage) {
     let donnees = etat.donnees.as_deref();
+    // On récupère le partage une fois ; chaque portrait verrouille brièvement.
     let partage = textures::portraits(ui.ctx());
-    let mut garde = partage.as_ref().and_then(|p| p.lock().ok());
 
-    mon_compte(ui, etat, donnees, &mut garde);
+    mon_compte(ui, etat, donnees, &partage);
     ui.add_space(10.0);
-    mes_champions(ui, etat, donnees, &mut garde);
+    mes_champions(ui, etat, donnees, &partage);
     ui.add_space(10.0);
-    dernieres(ui, etat, donnees, &mut garde);
+    dernieres(ui, etat, donnees, &partage);
 }
 
-fn mon_compte(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>, p: &mut Option<MutexGuard<'_, Portraits>>) {
+fn mon_compte(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>, p: &Option<PortraitsPartage>) {
     composants::panneau(ui, Some("Mon compte"), |ui| {
         let prog = etat.progression_lp.as_deref();
         let rang = prog.and_then(|g| rang_a_montrer(g.solo.as_ref(), g.flex.as_ref()));
@@ -144,7 +143,7 @@ fn mon_compte(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>, p
     });
 }
 
-fn mes_champions(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>, p: &mut Option<MutexGuard<'_, Portraits>>) {
+fn mes_champions(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>, p: &Option<PortraitsPartage>) {
     composants::panneau(ui, Some("Mes champions"), |ui| {
         let top = etat.stats_perso.as_deref().map(|s| meilleurs_champions(s, NB_CHAMPIONS)).unwrap_or_default();
         if top.is_empty() {
@@ -165,7 +164,7 @@ fn mes_champions(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>
     });
 }
 
-fn dernieres(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>, p: &mut Option<MutexGuard<'_, Portraits>>) {
+fn dernieres(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>, p: &Option<PortraitsPartage>) {
     composants::panneau(ui, Some("Cinq dernières parties"), |ui| {
         let parties = dernieres_parties(&etat.historique, NB_PARTIES);
         if parties.is_empty() {

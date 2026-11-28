@@ -1,5 +1,6 @@
 //! Écran Partie : deux équipes dans des panneaux, une ligne par joueur
-//! (portrait, pseudo, champion, rang, victoires, KDA, note en étoiles).
+//! (portrait, pseudo, champion, rang, victoires, KDA + ratio, CS, note en étoiles ;
+//! les objets sont dans l'infobulle de la ligne).
 //! Rendu uniquement sur événement : aucune animation, aucune requête réseau ici.
 
 use eframe::egui::{self, vec2, Align, Color32, Layout, RichText, Ui};
@@ -20,10 +21,12 @@ use crate::rangs::InfoJoueur;
 const PREFIXE_DEMO: &str = "demo-puuid-";
 
 /// Largeurs des colonnes (en points) : pseudo/champion, rang, victoires, KDA.
-const L_NOM: f32 = 190.0;
+const L_NOM: f32 = 170.0;
 const L_RANG: f32 = 110.0;
 const L_VICTOIRES: f32 = 70.0;
-const L_KDA: f32 = 110.0;
+const L_KDA: f32 = 100.0;
+/// Colonne CS (total, et par minute en dessous).
+const L_CS: f32 = 70.0;
 
 /// Onglet Partie. Renvoie true si le joueur a demandé une fiche (bouton « Fiche »).
 pub(super) fn dessiner_partie(ui: &mut Ui, etat: &EtatAffichage, donnees: Option<&DonneesJeu>) -> bool {
@@ -40,6 +43,7 @@ pub(super) fn dessiner_partie(ui: &mut Ui, etat: &EtatAffichage, donnees: Option
     // Le partage est récupéré une fois ; on ne verrouille que le temps de peindre un portrait.
     let portraits = textures::portraits(ui.ctx());
     if !etat.rangs.is_empty() {
+        let secondes = etat.partie.as_ref().map_or(0, |p| p.secondes);
         for (groupe, joueurs) in format::groupes(&etat.rangs, etat.sans_equipes, |j| j.bleu) {
             let couleur = couleur_groupe(groupe);
             composants::panneau(ui, None, |ui| {
@@ -47,7 +51,7 @@ pub(super) fn dessiner_partie(ui: &mut Ui, etat: &EtatAffichage, donnees: Option
                 ui.add_space(2.0);
                 for j in joueurs {
                     let live = etat.partie.as_ref().and_then(|p| trouver_live(p, donnees, j));
-                    demandee |= ligne_joueur(ui, j, live, &etat.cibles_fiche, donnees, portraits.as_ref());
+                    demandee |= ligne_joueur(ui, j, live, secondes, &etat.cibles_fiche, donnees, portraits.as_ref());
                 }
             });
             ui.add_space(8.0);
@@ -116,6 +120,7 @@ fn ligne_joueur(
     ui: &mut Ui,
     j: &InfoJoueur,
     live: Option<&JoueurLive>,
+    secondes: u32,
     cibles: &[VueCibleFiche],
     donnees: Option<&DonneesJeu>,
     portraits: Option<&PortraitsPartage>,
@@ -123,7 +128,8 @@ fn ligne_joueur(
     let mut demandee = false;
     let champion = format::nom_champion(donnees, j.champion);
     let cible = format::cible_du_joueur(cibles, &j.nom, j.champion);
-    egui::Frame::NONE.fill(fond_ligne(j.moi)).inner_margin(egui::Margin::symmetric(4, 3)).show(ui, |ui| {
+    let mut bouton_survole = false;
+    let rep = egui::Frame::NONE.fill(fond_ligne(j.moi)).inner_margin(egui::Margin::symmetric(4, 3)).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         ui.horizontal(|ui| {
             portrait(ui, portraits, donnees, &champion, live.map(|l| l.niveau));
@@ -150,7 +156,21 @@ fn ligne_joueur(
             });
             cellule(ui, L_KDA, |ui| {
                 if let Some(l) = live {
-                    ui.label(format::kda(l.kills, l.morts, l.assists));
+                    ui.vertical(|ui| {
+                        ui.label(format::kda(l.kills, l.morts, l.assists));
+                        let ratio = format::ratio_kda(l.kills, l.morts, l.assists);
+                        ui.label(RichText::new(ratio).small().color(theme::TEXTE_SECONDAIRE));
+                    });
+                }
+            });
+            cellule(ui, L_CS, |ui| {
+                if let Some(l) = live {
+                    ui.vertical(|ui| {
+                        ui.label(l.cs.to_string());
+                        if let Some(m) = cs_par_minute(l.cs, secondes) {
+                            ui.label(RichText::new(format!("{m}/min")).small().color(theme::TEXTE_SECONDAIRE));
+                        }
+                    });
                 }
             });
             cellule(ui, 120.0, |ui| composants::etoiles(ui, note_affichee(cible)));
@@ -162,14 +182,31 @@ fn ligne_joueur(
             };
             if let Some(d) = demande {
                 let aide = if j.moi { "Ta fiche : 0 requête Riot" } else { "Radar, MMR estimé, champions : 11 requêtes au plus" };
-                if ui.small_button("Fiche").on_hover_text(aide).clicked() {
+                let bouton = ui.small_button("Fiche").on_hover_text(aide);
+                bouton_survole = bouton.hovered();
+                if bouton.clicked() {
                     super::enfant::demander(&d);
                     demandee = true;
                 }
             }
         });
     });
+    // Infobulle de la ligne : les objets du joueur (pas quand le bouton a la sienne).
+    if let (Some(l), false) = (live, bouton_survole) {
+        rep.response.on_hover_text(texte_objets(donnees, l));
+    }
     demandee
+}
+
+/// CS par minute (une décimale) ; `None` tant que la partie n'a pas démarré.
+fn cs_par_minute(cs: u16, secondes: u32) -> Option<String> {
+    (secondes > 0).then(|| format::decimal(f32::from(cs) * 60.0 / secondes as f32, 1))
+}
+
+/// Texte de l'infobulle d'une ligne : les objets du joueur.
+fn texte_objets(donnees: Option<&DonneesJeu>, l: &JoueurLive) -> String {
+    let noms = format::noms_objets(donnees, &l.items);
+    if noms.is_empty() { "Objets : aucun".to_string() } else { format!("Objets : {}", noms.join(", ")) }
 }
 
 /// Ligne sans rang (partie en direct seule) : portrait, pseudo, champion, KDA, CS.
@@ -186,13 +223,21 @@ fn ligne_live(ui: &mut Ui, j: &JoueurLive, donnees: Option<&DonneesJeu>, portrai
             ui.label(format::kda(j.kills, j.morts, j.assists));
         });
         ui.label(RichText::new(format!("{} CS", j.cs)).color(theme::TEXTE_SECONDAIRE));
-    });
+    })
+    .response
+    .on_hover_text(texte_objets(donnees, j));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ui::demo;
+
+    #[test]
+    fn cs_par_minute_calcule() {
+        assert_eq!(cs_par_minute(100, 0), None);
+        assert!(cs_par_minute(60, 600).is_some());
+    }
 
     #[test]
     fn note_seulement_en_demo() {

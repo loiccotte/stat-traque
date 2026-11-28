@@ -21,7 +21,7 @@
 
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
-use std::sync::{Mutex, Once};
+use std::sync::{Mutex, MutexGuard, Once};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
@@ -41,6 +41,15 @@ static DPI_POLICE: AtomicU32 = AtomicU32::new(0);
 /// Ce qui est affiché : grille, largeur de chaque colonne, DPI utilisé.
 /// Sert aussi à ne RIEN refaire si l'état a changé sans toucher aux rangs.
 static CONTENU: Mutex<Contenu> = Mutex::new(Contenu { grille: Vec::new(), largeurs: Vec::new(), dpi: 0, live: Vec::new() });
+
+/// Verrouille `CONTENU` SANS jamais paniquer : si un autre thread a paniqué en le tenant
+/// (verrou « empoisonné »), on reprend quand même les données (de simples textes à
+/// afficher). Indispensable dans la procédure de fenêtre `extern "system"` : une panique
+/// qui la traverserait abandonnerait tout le processus.
+fn contenu() -> MutexGuard<'static, Contenu> {
+    CONTENU.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Petite fenêtre en jeu : `true` = état RÉDUIT (une ligne), `false` = état OUVERT (défaut).
 /// Aucun raccourci secondaire n'existe encore : voir `basculer_reduit` (à brancher par tray.rs / ui/mod.rs).
 static REDUIT: AtomicBool = AtomicBool::new(false);
@@ -268,7 +277,7 @@ pub unsafe fn afficher(visible: bool) {
         (false, false) => {
             DestroyWindow(fenetre);
             FENETRE.store(null_mut(), Ordering::Release);
-            let mut c = CONTENU.lock().unwrap();
+            let mut c = contenu();
             c.grille.clear();
             c.live.clear();
             c.dpi = 0;
@@ -341,7 +350,7 @@ pub unsafe fn redessiner() {
     let live = lignes_live(crate::affichage::avec(|e| e.live_moi.clone()).as_ref(), REDUIT.load(Ordering::Acquire));
     let dpi = dpi(fenetre);
     {
-        let c = CONTENU.lock().unwrap();
+        let c = contenu();
         if c.grille == grille && c.dpi == dpi && c.live == live {
             return; // l'état a changé, mais pas les rangs : aucun dessin
         }
@@ -377,7 +386,7 @@ pub unsafe fn redessiner() {
     let largeur_grille = 2 * echelle(MARGE, dpi) + largeurs.iter().sum::<i32>() + ecarts(colonnes, dpi);
     let largeur = largeur_grille.max(largeur_live);
     let hauteur = 2 * echelle(MARGE, dpi) + echelle(HAUTEUR_LIGNE, dpi) * grille.len() as i32 + hauteur_bloc_live(live.len(), dpi);
-    *CONTENU.lock().unwrap() = Contenu { grille, largeurs, dpi, live };
+    *contenu() = Contenu { grille, largeurs, dpi, live };
     SetWindowPos(fenetre, HWND_TOPMOST, 0, 0, largeur, hauteur, SWP_NOMOVE | SWP_NOACTIVATE);
     InvalidateRect(fenetre, null_mut(), 1);
 }
@@ -470,9 +479,9 @@ unsafe fn peindre(fenetre: HWND) {
     let dc = BeginPaint(fenetre, &mut ps);
     let mut zone = RECT { left: 0, top: 0, right: 0, bottom: 0 };
     GetClientRect(fenetre, &mut zone);
-    let contenu = CONTENU.lock().unwrap();
-    dessiner_cadre(dc, &zone, contenu.dpi.max(96));
-    dessiner_grille(dc, &contenu, &zone);
+    let verrou = contenu();
+    dessiner_cadre(dc, &zone, verrou.dpi.max(96));
+    dessiner_grille(dc, &verrou, &zone);
     EndPaint(fenetre, &ps);
 }
 
@@ -484,7 +493,7 @@ unsafe extern "system" fn procedure(fenetre: HWND, msg: u32, wparam: WPARAM, lpa
         }
         // Déplacée sur un écran d'une autre échelle : nouvelle police, nouvelle taille.
         WM_DPICHANGED => {
-            CONTENU.lock().unwrap().dpi = 0; // force le recalcul
+            contenu().dpi = 0; // force le recalcul
             redessiner();
             0
         }

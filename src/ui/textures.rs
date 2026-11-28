@@ -1,4 +1,4 @@
-//! Textures des portraits de champions : au plus 16 en RAM, libérées en fin de trame.
+//! Textures des portraits de champions : au plus 48 en RAM, libérées en fin de trame.
 //!
 //! Principe (0 % CPU au repos, aucune boucle) :
 //!  - un écran demande `texture(id, taille)` pendant qu'il dessine ;
@@ -12,7 +12,7 @@
 //! La partie « logique » (cache LRU, file, échecs mémorisés) est dans `Suivi`, un type
 //! sans egui ni thread, pour pouvoir la tester avec une horloge injectée.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -22,8 +22,10 @@ use eframe::egui;
 
 use crate::icones::{self, Icone, Taille};
 
-/// Nombre maximal de textures gardées en mémoire.
-const MAX_TEXTURES: usize = 16;
+/// Nombre maximal de textures gardées en mémoire (48 x ~9 Ko ≈ 440 Ko). Assez pour une
+/// tier list ou un historique maximisés ; de toute façon, une texture affichée pendant
+/// la trame courante n'est jamais évincée (voir `evincer`).
+const MAX_TEXTURES: usize = 48;
 /// Nombre maximal de demandes en attente (en plus de celle en cours).
 const MAX_FILE: usize = 16;
 /// Après un échec, on ne réessaie pas ce portrait pendant ce délai.
@@ -41,6 +43,9 @@ pub struct Suivi<K, V> {
     /// Valeur + « date » de dernière utilisation (compteur croissant, plus parlant
     /// qu'une horloge : deux accès dans la même trame restent ordonnés).
     cache: HashMap<K, (V, u64)>,
+    /// Clés demandées pendant la trame courante : protégées de l'éviction, sinon on
+    /// supprimerait un portrait affiché, redemandé à la trame suivante (boucle disque).
+    utilises: HashSet<K>,
     compteur: u64,
     file: VecDeque<K>,
     /// La requête partie vers le thread, dont on attend la réponse.
@@ -63,6 +68,7 @@ impl<K: Hash + Eq + Clone, V> Suivi<K, V> {
             max_cache,
             max_file,
             cache: HashMap::new(),
+            utilises: HashSet::new(),
             compteur: 0,
             file: VecDeque::new(),
             en_cours: None,
@@ -82,6 +88,9 @@ impl<K: Hash + Eq + Clone, V> Suivi<K, V> {
 
     /// Demande un portrait : s'il manque, l'ajoute à la file (sans doublon).
     pub fn demander(&mut self, k: &K, maintenant: Instant) -> Reponse {
+        if !self.utilises.contains(k) {
+            self.utilises.insert(k.clone());
+        }
         if self.lire(k).is_some() {
             return Reponse::Pret;
         }
@@ -127,19 +136,30 @@ impl<K: Hash + Eq + Clone, V> Suivi<K, V> {
         }
     }
 
-    /// Retire les moins récemment utilisés jusqu'à `max_cache` entrées.
+    /// Retire les moins récemment utilisés jusqu'à `max_cache` entrées, SANS toucher
+    /// aux clés demandées pendant cette trame (le cache peut alors dépasser le maximum
+    /// le temps d'une trame très chargée). Termine la trame : remet le suivi à zéro.
     pub fn evincer(&mut self) {
         while self.cache.len() > self.max_cache {
-            let Some(plus_vieux) = self.cache.iter().min_by_key(|(_, (_, vu))| *vu).map(|(k, _)| k.clone()) else {
-                break;
+            let utilises = &self.utilises;
+            let Some(plus_vieux) = self
+                .cache
+                .iter()
+                .filter(|(k, _)| !utilises.contains(*k))
+                .min_by_key(|(_, (_, vu))| *vu)
+                .map(|(k, _)| k.clone())
+            else {
+                break; // tout est affiché : on garde tout
             };
             self.cache.remove(&plus_vieux);
         }
+        self.utilises.clear();
     }
 
     /// Oublie tout (changement de patch : les anciens portraits ne valent plus).
     pub fn vider(&mut self) {
         self.cache.clear();
+        self.utilises.clear();
         self.file.clear();
         self.echecs.clear();
         self.en_cours = None;
@@ -281,13 +301,12 @@ impl Portraits {
             // tout seul quand `Portraits` est détruit (l'émetteur est fermé).
             for (version, cle) in rx_req {
                 let icone = icones::charger(&version, &cle.id_dd, cle.taille());
-                let reussi = icone.is_some();
                 if tx_rep.send((version, cle, icone)).is_err() {
                     break;
                 }
-                if reussi {
-                    ctx.request_repaint(); // UN redessin : la trame crée la texture
-                }
+                // UN redessin, succès ou échec : la trame crée la texture, ou passe au
+                // portrait suivant de la file. Pas de boucle : un échec est mémorisé 10 min.
+                ctx.request_repaint();
             }
         });
         if cree.is_ok() {
@@ -315,7 +334,7 @@ pub fn installer(ctx: &egui::Context, p: Portraits) -> PortraitsPartage {
     partage
 }
 
-/// Depuis un écran : `if let Some(p) = textures::portraits(ui.ctx()) { p.lock().unwrap().texture(..) }`.
+/// Depuis un écran : `if let Some(p) = textures::portraits(ui.ctx()) { if let Ok(mut g) = p.lock() { g.texture(..) } }`.
 pub fn portraits(ctx: &egui::Context) -> Option<PortraitsPartage> {
     ctx.data(|d| d.get_temp::<PortraitsPartage>(egui::Id::NULL))
 }
@@ -345,6 +364,35 @@ mod tests {
         assert_eq!(s.demander(&"a", n), Reponse::Pret);
         assert_eq!(s.demander(&"c", n), Reponse::Pret);
         assert_eq!(s.demander(&"b", n), Reponse::Absent); // « b » est parti
+    }
+
+    #[test]
+    fn pas_d_eviction_d_une_cle_de_la_trame_courante() {
+        // 5 portraits visibles pour un cache de 3 : aucun ne doit être évincé.
+        let mut s = suivi(3, 8);
+        let n = t0();
+        let cles = ["a", "b", "c", "d", "e"];
+        for k in cles {
+            s.recu(k, Some(1), n);
+        }
+        for k in cles {
+            assert_eq!(s.demander(&k, n), Reponse::Pret);
+        }
+        s.evincer();
+        assert_eq!(s.taille_cache(), 5);
+        // Trame suivante : toujours tous présents, rien en file (pas de relecture disque).
+        for k in cles {
+            assert_eq!(s.demander(&k, n), Reponse::Pret);
+        }
+        assert!(!s.suivant_possible());
+        // Quand seuls 2 sont visibles, l'éviction vise les non-utilisés.
+        s.evincer();
+        s.demander(&"a", n);
+        s.demander(&"b", n);
+        s.evincer();
+        assert_eq!(s.taille_cache(), 3);
+        assert_eq!(s.demander(&"a", n), Reponse::Pret);
+        assert_eq!(s.demander(&"b", n), Reponse::Pret);
     }
 
     #[test]

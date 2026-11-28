@@ -51,6 +51,22 @@ struct SuiviChampSelect {
     matchup_annonce: (u16, u16),
 }
 
+impl SuiviChampSelect {
+    /// Retour au salon / client au repos : la partie est finie, le champion choisi
+    /// ne vaut plus rien. Sans ça, une partie SANS champ select (outil d'entraînement,
+    /// TFT) hériterait du champion de la précédente et pourrait m'attribuer un autre joueur.
+    fn apres_phase(&mut self, p: Phase) {
+        if matches!(p, Phase::Lobby | Phase::Aucune) {
+            self.dernier = None;
+        }
+    }
+
+    /// Mon champion (id) tel que choisi pendant CE champ select ; `None` si inconnu.
+    fn mon_champion_id(&self) -> Option<u16> {
+        self.dernier.as_ref().map(|c| c.champion).filter(|&c| c != 0)
+    }
+}
+
 struct Etat {
     phase: Phase,
     mode: Mode,
@@ -236,6 +252,7 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
     });
     // Retour au salon / client au repos : la partie précédente est finie (une partie
     // TFT, sans champ select, ne doit pas hériter de la file ni du mode Arena).
+    etat.cs.apres_phase(p);
     if matches!(p, Phase::Lobby | Phase::Aucune) {
         etat.file_gameflow = None;
         etat.sans_equipes = false;
@@ -266,8 +283,8 @@ fn changer_phase(etat: &mut Etat, p: Phase, tx: &Sender<Evenement>) {
 /// Nom de mon champion (choisi en champ select), pour me retrouver dans la liste du jeu.
 /// `None` si inconnu (client lancé en cours de partie, Data Dragon pas prêt...).
 fn mon_champion(etat: &Etat) -> Option<String> {
-    let cs = etat.cs.dernier.as_ref().filter(|c| c.champion != 0)?;
-    Some(etat.donnees.as_ref()?.nom_champion(cs.champion).to_string())
+    let champion = etat.cs.mon_champion_id()?;
+    Some(etat.donnees.as_ref()?.nom_champion(champion).to_string())
 }
 
 /// Le suivi de partie (port 2999) ne tourne QUE pendant la partie, et seulement
@@ -881,4 +898,34 @@ fn objets(etat: &mut Etat, d: &DonneesJeu, cs: &ChampSelect) {
         }
         Err(e) => log!("Item set non appliqué : {e}"),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cs_avec_champion(champion: u16) -> SuiviChampSelect {
+        SuiviChampSelect { dernier: Some(ChampSelect { champion, ..Default::default() }), ..Default::default() }
+    }
+
+    #[test]
+    fn champion_du_champ_select_connu_pendant_la_partie() {
+        let mut cs = cs_avec_champion(103);
+        cs.apres_phase(Phase::InProgress);
+        assert_eq!(cs.mon_champion_id(), Some(103));
+    }
+
+    #[test]
+    fn sans_champ_select_pas_de_champion_donc_pas_de_live_moi() {
+        // Partie 1 avec champ select, retour au salon, partie 2 sans champ select
+        // (outil d'entraînement) : aucun champion mémorisé -> `live_moi` reste None.
+        let mut cs = cs_avec_champion(103);
+        cs.apres_phase(Phase::EndOfGame);
+        assert_eq!(cs.mon_champion_id(), Some(103)); // encore utile pour l'écran de fin
+        cs.apres_phase(Phase::Lobby);
+        assert_eq!(cs.mon_champion_id(), None);
+        let mut cs = cs_avec_champion(103);
+        cs.apres_phase(Phase::Aucune);
+        assert_eq!(cs.mon_champion_id(), None);
+    }
 }

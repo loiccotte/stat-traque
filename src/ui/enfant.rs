@@ -254,8 +254,11 @@ impl Appli {
     /// du cache d'icônes dans un thread : il ne doit jamais ralentir une trame.
     fn lancer_menage(&mut self) {
         let version = version_patch(&self.etat);
-        self.portraits.lock().unwrap().definir_version(version.clone());
-        if let (Some(v), false) = (version, self.menage_fait) {
+        if let Ok(mut p) = self.portraits.lock() {
+            p.definir_version(version.clone());
+        }
+        // Le ménage du cache d'icônes ne sert qu'à la fenêtre : l'overlay n'a pas de portraits.
+        if let (Some(v), false, false) = (version, self.menage_fait, self.overlay) {
             self.menage_fait = true;
             std::thread::spawn(move || icones::menage(&v));
         }
@@ -308,7 +311,9 @@ impl eframe::App for Appli {
             ecrans::dessiner(ui, &mut self.ecran, &self.etat);
         }
         // Une fois par image : libère les textures de portraits en trop.
-        self.portraits.lock().unwrap().fin_de_trame();
+        if let Ok(mut p) = self.portraits.lock() {
+            p.fin_de_trame();
+        }
     }
 
     /// Couleur de fond : opaque pour la fenêtre, transparente pour l'overlay.

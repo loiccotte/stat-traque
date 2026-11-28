@@ -10,9 +10,6 @@
 //!
 //! Rempli par T-01 (panneau, titre, onglets, barre, pastille, étoiles, portrait, emblème).
 
-// Branchés par les écrans plus tard : en attendant, rien n'appelle ces fonctions.
-#![allow(dead_code)]
-
 use eframe::egui::{
     epaint::Mesh, vec2, Align2, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, Response, Sense, Shape,
     Stroke, StrokeKind, Ui, Vec2,

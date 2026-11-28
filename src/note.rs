@@ -28,9 +28,6 @@
 //!  3. calibrage des poids par régression logistique (poids qui prédisent le mieux la
 //!     victoire, sur les parties collectées).
 
-// Rempli et branché par les tâches suivantes (composants d'étoiles, overlay).
-#![allow(dead_code)]
-
 /// À partir de cette note (lettre S), les étoiles passent en or clair.
 pub const SEUIL_S: u8 = 90;
 
@@ -58,6 +55,8 @@ pub fn etoiles_allumees(note: u8) -> u8 {
     (note as u16).div_ceil(20).min(5) as u8
 }
 
+// Pas encore affichée par un écran (seuls les tests l'appellent) : à brancher ou supprimer.
+#[allow(dead_code)]
 /// Lettre de la note : D (< 45), C (< 60), B (< 75), A (< 90), S (90 et plus).
 pub fn lettre(note: u8) -> char {
     match note {
@@ -190,8 +189,8 @@ mod tests {
         assert_eq!(note_partie(&deux, Some("middle"), false), None);
         assert_eq!(note_partie(&[None; 7], Some("middle"), false), None);
         // Support : le farm (poids 0) ne compte pas dans les 3 axes minimaux.
-        let farm_et_deux = [Some(70), Some(70), None, None, None, None, Some(70)];
-        assert_eq!(note_partie(&farm_et_deux, Some("utility"), false), None);
+        let deux_axes_et_farm_sans_poids = [Some(70), Some(70), None, None, None, None, Some(70)];
+        assert_eq!(note_partie(&deux_axes_et_farm_sans_poids, Some("utility"), false), None);
         // Trois axes utilisables : une note.
         let trois = [Some(70), Some(70), None, None, None, None, Some(70)];
         assert_eq!(note_partie(&trois, Some("middle"), false), Some(70));

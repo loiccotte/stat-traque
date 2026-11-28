@@ -5,9 +5,6 @@
 //! donnée adverse, aucun timer d'objectif ou de sort. Ce sont de simples tables
 //! fixes : coût mémoire et CPU nul.
 
-// Pas encore consommés : la petite fenêtre (autre tâche) les appellera.
-#![allow(dead_code)]
-
 /// Repère de CS par minute à un instant donné de la partie.
 ///
 /// Courbe en 3 morceaux (interpolation linéaire) :

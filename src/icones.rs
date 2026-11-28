@@ -15,9 +15,6 @@
 //!   Résident par icône conservée : 9,2 Ko (Ligne) ou 36,9 Ko (Fiche).
 //!   Plafonds en dur : entrée <= 200 Ko, côté <= 256 px => au plus 256 Ko de pixels.
 
-// Rempli par T-02 mais pas encore branché : en attendant, rien n'appelle ces fonctions.
-#![allow(dead_code)]
-
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;

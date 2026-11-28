@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::affichage::VueLiveMoi;
 use crate::evenement::Evenement;
 
 /// Toutes les combien de secondes on relit la partie.
@@ -94,6 +95,50 @@ impl InstantanePartie {
         })
     }
 }
+
+/// Réduit un nom de champion à ses lettres et chiffres minuscules (« Kai'Sa » -> « kaisa »),
+/// pour comparer le nom du jeu et celui de Data Dragon sans se soucier de la ponctuation.
+fn normaliser(nom: &str) -> String {
+    nom.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// Or actuel dans la réponse de `/liveclientdata/activeplayer` (champ `currentGold`,
+/// uniquement MON joueur). `None` si le champ manque.
+///
+/// Pas encore branché : `activeplayer` n'est pas demandé aujourd'hui (règle de la tâche :
+/// aucune requête de plus). Prêt pour le jour où cette route sera lue.
+#[allow(dead_code)]
+pub fn or_actuel(activeplayer: &Value) -> Option<u32> {
+    let or = activeplayer["currentGold"].as_f64()?;
+    (or >= 0.0).then_some(or as u32)
+}
+
+impl InstantanePartie {
+    /// MON joueur dans la liste, retrouvé par mon champion (connu depuis le champ select).
+    /// `playerlist` ne dit pas qui est le joueur local : on ne trouve donc « moi » que si
+    /// le nom du champion est unique dans la partie, sinon `None` (jamais de devinette).
+    pub fn mon_joueur(&self, mon_champion: &str) -> Option<&JoueurLive> {
+        let cible = normaliser(mon_champion);
+        if cible.is_empty() {
+            return None;
+        }
+        let mut trouves = self.joueurs.iter().filter(|j| normaliser(&j.champion) == cible);
+        let premier = trouves.next()?;
+        trouves.next().is_none().then_some(premier)
+    }
+
+    /// Mes chiffres pour la petite fenêtre : temps, niveau, CS (déjà dans `playerlist` et
+    /// `gamestats`) et or (`or`, venant de `activeplayer` si on le lit un jour ; 0 sinon).
+    /// `None` si je ne suis pas retrouvé ou si le niveau est illisible.
+    /// Aucune donnée d'un adversaire n'est lue ici.
+    pub fn vue_moi(&self, mon_champion: &str, or: Option<u32>) -> Option<VueLiveMoi> {
+        let moi = self.mon_joueur(mon_champion).filter(|j| j.niveau > 0)?;
+        Some(VueLiveMoi { secondes: self.secondes, cs: moi.cs, niveau: moi.niveau, or: or.unwrap_or(0), forme: None })
+    }
+}
+
+// L'« or contre l'adversaire » (estimé à partir des objets adverses) n'est volontairement
+// PAS implémenté : il sera validé (ou non) par l'audit de conformité Riot T24.
 
 /// Poignée sur le thread de partie : quand on la lâche (`drop`), le thread s'arrête.
 pub struct SuiviPartie {
@@ -192,6 +237,68 @@ mod tests {
         assert!(j.bleu);
         assert_eq!((j.kills, j.morts, j.assists, j.cs, j.niveau), (3, 1, 4, 102, 9));
         assert_eq!(j.items, vec![3020, 226655]); // id à 6 chiffres conservé
+    }
+
+    fn partie_simulee(joueurs: &str, stats: &str) -> InstantanePartie {
+        let j: Value = serde_json::from_str(joueurs).unwrap();
+        let s: Value = serde_json::from_str(stats).unwrap();
+        InstantanePartie::depuis_json(&j, &s).unwrap()
+    }
+
+    const DEUX_JOUEURS: &str = r#"[
+        {"riotIdGameName":"Alice","championName":"Kai'Sa","team":"ORDER","level":11,"scores":{"creepScore":87}},
+        {"riotIdGameName":"Bob","championName":"Ahri","team":"CHAOS","level":12,"scores":{"creepScore":95}}]"#;
+
+    #[test]
+    fn mes_chiffres_partie_normale() {
+        let p = partie_simulee(DEUX_JOUEURS, r#"{"gameMode":"CLASSIC","gameTime":812.9}"#);
+        // La ponctuation du nom ne gêne pas ; on lit MON entrée, pas celle de l'adversaire.
+        let v = p.vue_moi("Kaisa", Some(1350)).unwrap();
+        assert_eq!(v, VueLiveMoi { secondes: 812, cs: 87, niveau: 11, or: 1350, forme: None });
+        // Sans activeplayer : or à 0.
+        assert_eq!(p.vue_moi("Kai'Sa", None).unwrap().or, 0);
+    }
+
+    #[test]
+    fn mes_chiffres_mode_streamer() {
+        // Riot ID vide : sans importance, on me retrouve par mon champion.
+        let p = partie_simulee(
+            r#"[{"riotIdGameName":"","riotId":"","championName":"Ahri","team":"ORDER","level":5,"scores":{"creepScore":30}}]"#,
+            r#"{"gameMode":"CLASSIC","gameTime":400.0}"#,
+        );
+        let v = p.vue_moi("Ahri", None).unwrap();
+        assert_eq!((v.cs, v.niveau, v.secondes), (30, 5, 400));
+    }
+
+    #[test]
+    fn mes_chiffres_champ_manquant_ou_inconnu() {
+        // Niveau absent -> illisible.
+        let p = partie_simulee(
+            r#"[{"championName":"Ahri","team":"ORDER","scores":{"creepScore":30}}]"#,
+            r#"{"gameMode":"CLASSIC","gameTime":400.0}"#,
+        );
+        assert_eq!(p.vue_moi("Ahri", None), None);
+        // Mon champion absent de la liste, ou vide.
+        let p = partie_simulee(DEUX_JOUEURS, r#"{"gameTime":10.0}"#);
+        assert_eq!(p.vue_moi("Zed", None), None);
+        assert_eq!(p.vue_moi("", None), None);
+        // Même champion deux fois : on ne devine pas.
+        let double = r#"[{"championName":"Ahri","level":3},{"championName":"Ahri","level":4}]"#;
+        assert_eq!(partie_simulee(double, "{}").vue_moi("Ahri", None), None);
+    }
+
+    #[test]
+    fn hors_partie_rien_a_lire() {
+        // Le jeu ne répond pas / pas une liste : pas de résumé du tout.
+        let rien = Value::Null;
+        assert!(InstantanePartie::depuis_json(&rien, &rien).is_none());
+    }
+
+    #[test]
+    fn or_depuis_activeplayer() {
+        let v = |t: &str| serde_json::from_str::<Value>(t).unwrap();
+        assert_eq!(or_actuel(&v(r#"{"currentGold":1234.56}"#)), Some(1234));
+        assert_eq!(or_actuel(&v(r#"{}"#)), None);
     }
 
     #[test]

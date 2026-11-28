@@ -120,7 +120,7 @@ fn dessiner_onglet(ui: &mut Ui, ecran: &mut Ecran, etat: &EtatAffichage) {
         Onglet::Fiche => super::fiche::dessiner(ui, etat, &mut ecran.fiche, &mut ecran.copie, donnees),
         Onglet::Historique => super::historique::dessiner(ui, etat, donnees, &mut ecran.copie),
         Onglet::TierList => match &etat.tier_list {
-            Some(t) => super::historique::dessiner_tier_list(ui, t, &mut ecran.filtre_tier),
+            Some(t) => super::historique::dessiner_tier_list_avec(ui, t, &mut ecran.filtre_tier, donnees),
             None => vide(ui, "Pas encore de stats pour ce patch (stat-traque collecter 30)."),
         },
         Onglet::Journal => dessiner_journal(ui, &etat.messages),

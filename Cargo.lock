@@ -2281,6 +2281,7 @@ dependencies = [
  "base64",
  "eframe",
  "native-tls",
+ "png",
  "serde",
  "serde_json",
  "tungstenite",

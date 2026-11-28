@@ -171,6 +171,20 @@ pub struct EtatAffichage {
     pub recap_partage: Option<String>,
     /// Joueurs dont on peut demander la fiche (partie en cours, via spectator).
     pub cibles_fiche: Vec<VueCibleFiche>,
+    /// Mes chiffres en direct (overlay en jeu). `default` : un ancien JSON sans ce champ reste lisible.
+    #[serde(default)]
+    pub live_moi: Option<VueLiveMoi>,
+}
+
+/// Mes chiffres en direct pendant la partie (overlay réduit / ouvert).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VueLiveMoi {
+    pub secondes: u32,
+    pub cs: u16,
+    pub niveau: u8,
+    pub or: u32,
+    /// Forme récente (0 à 100), si connue.
+    pub forme: Option<u8>,
 }
 
 static ETAT: Mutex<Option<EtatAffichage>> = Mutex::new(None);
@@ -319,4 +333,27 @@ pub struct VueCibleFiche {
     pub nom: String,
     /// Champion joué dans la partie (id).
     pub champion: u16,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Un état envoyé par une ancienne version (sans `live_moi`) doit rester lisible.
+    #[test]
+    fn json_sans_live_moi_se_deserialise() {
+        let mut json = serde_json::to_value(EtatAffichage::default()).unwrap();
+        json.as_object_mut().unwrap().remove("live_moi");
+        let etat: EtatAffichage = serde_json::from_value(json).unwrap();
+        assert_eq!(etat.live_moi, None);
+    }
+
+    #[test]
+    fn live_moi_fait_l_aller_retour() {
+        let vue = VueLiveMoi { secondes: 600, cs: 70, niveau: 8, or: 4200, forme: Some(65) };
+        let etat = EtatAffichage { live_moi: Some(vue.clone()), ..Default::default() };
+        let json = serde_json::to_string(&etat).unwrap();
+        let relu: EtatAffichage = serde_json::from_str(&json).unwrap();
+        assert_eq!(relu.live_moi, Some(vue));
+    }
 }

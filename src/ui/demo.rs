@@ -143,6 +143,7 @@ pub fn etat(phase: Phase) -> EtatAffichage {
             .enumerate()
             .map(|(i, c)| VueCibleFiche { puuid: format!("demo-puuid-{i}"), nom: format!("Joueur{} #EUW", i + 1), champion: c.0 })
             .collect(),
+        live_moi: None,
     }
 }
 

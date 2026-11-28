@@ -3,6 +3,7 @@
 
 use eframe::egui::{self, RichText, Ui};
 
+use super::composants;
 use super::ecrans::{vide, Ecran};
 use super::reglages::{libelle_region, FormReglages, REGIONS};
 use super::theme;
@@ -29,9 +30,7 @@ pub(super) fn dessiner_journal(ui: &mut Ui, messages: &[String]) {
 
 pub(super) fn dessiner_reglages(ui: &mut Ui, ecran: &mut Ecran) {
     let f = &mut ecran.form;
-    theme::carte().show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
-        theme::titre(ui, "Champ select");
+    composants::panneau(ui, Some("Champ select"), |ui| {
         ui.horizontal(|ui| {
             ui.label("Flash sur la touche");
             ui.radio_value(&mut f.flash_sur_f, false, "D");
@@ -48,9 +47,7 @@ pub(super) fn dessiner_reglages(ui: &mut Ui, ecran: &mut Ecran) {
         );
     });
     ui.add_space(8.0);
-    theme::carte().show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
-        theme::titre(ui, "Compte et données");
+    composants::panneau(ui, Some("Compte et données"), |ui| {
         ui.horizontal(|ui| {
             ui.label("Serveur");
             egui::ComboBox::from_id_salt("region").selected_text(libelle_region(&f.region).to_string()).show_ui(ui, |ui| {

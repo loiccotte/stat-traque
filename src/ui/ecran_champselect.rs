@@ -3,7 +3,9 @@
 
 use eframe::egui::{self, Color32, RichText, Ui};
 
+use super::composants::{self, TaillePortrait};
 use super::format;
+use super::textures::{self, PortraitsPartage};
 use super::theme;
 use crate::affichage::{VueChampSelect, VueObjets, VueRunes};
 use crate::compo::AnalyseEquipe;
@@ -11,7 +13,11 @@ use crate::ddragon::DonneesJeu;
 
 pub(super) fn dessiner_champ_select(ui: &mut Ui, cs: &VueChampSelect, donnees: Option<&DonneesJeu>) {
     // En-tête : mon champion, mon rôle, verrouillé ?
+    let portraits = textures::portraits(ui.ctx());
     ui.horizontal(|ui| {
+        if let Some(nom) = &cs.mon_champion {
+            portrait(ui, portraits.as_ref(), donnees, nom);
+        }
         let champion = cs.mon_champion.as_deref().unwrap_or("pas encore choisi");
         ui.label(RichText::new(champion).color(theme::OR).strong().size(22.0));
         if let Some(r) = &cs.role {
@@ -27,15 +33,13 @@ pub(super) fn dessiner_champ_select(ui: &mut Ui, cs: &VueChampSelect, donnees: O
 
     // Les deux compos côte à côte.
     ui.columns(2, |colonnes| {
-        dessiner_equipe(&mut colonnes[0], "Ton équipe", theme::EQUIPE_BLEUE, &cs.allies, cs.analyse_allies.as_ref(), donnees);
-        dessiner_equipe(&mut colonnes[1], "Équipe ennemie", theme::EQUIPE_ROUGE, &cs.ennemis, cs.analyse_ennemis.as_ref(), donnees);
+        dessiner_equipe(&mut colonnes[0], "Ton équipe", theme::EQUIPE_BLEUE, &cs.allies, cs.analyse_allies.as_ref(), donnees, portraits.as_ref());
+        dessiner_equipe(&mut colonnes[1], "Équipe ennemie", theme::EQUIPE_ROUGE, &cs.ennemis, cs.analyse_ennemis.as_ref(), donnees, portraits.as_ref());
     });
 
     if !cs.plan_de_jeu.is_empty() {
         ui.add_space(8.0);
-        theme::carte().show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            theme::titre(ui, "Plan de jeu");
+        composants::panneau(ui, Some("Plan de jeu"), |ui| {
             for conseil in &cs.plan_de_jeu {
                 ui.label(format!("• {conseil}"));
             }
@@ -43,9 +47,7 @@ pub(super) fn dessiner_champ_select(ui: &mut Ui, cs: &VueChampSelect, donnees: O
     }
     if !cs.picks_conseilles.is_empty() {
         ui.add_space(8.0);
-        theme::carte().show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            theme::titre(ui, "Picks qui complètent la compo");
+        composants::panneau(ui, Some("Picks qui complètent la compo"), |ui| {
             for (nom, raison) in &cs.picks_conseilles {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(nom).strong());
@@ -77,14 +79,19 @@ fn dessiner_equipe(
     champions: &[String],
     analyse: Option<&AnalyseEquipe>,
     donnees: Option<&DonneesJeu>,
+    portraits: Option<&PortraitsPartage>,
 ) {
-    theme::carte().show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
+    composants::panneau(ui, None, |ui| {
         ui.label(RichText::new(titre).color(couleur).strong().size(16.0));
         if champions.is_empty() {
             ui.label(RichText::new("pas encore de champions").color(theme::TEXTE_DOUX));
         } else {
-            ui.label(champions.join(" · "));
+            // Un portrait par champion déjà choisi (noms conservés en infobulle).
+            ui.horizontal_wrapped(|ui| {
+                for nom in champions {
+                    portrait(ui, portraits, donnees, nom).on_hover_text(nom);
+                }
+            });
         }
         let Some(a) = analyse.filter(|a| a.nombre > 0) else { return };
         ui.separator();
@@ -124,6 +131,16 @@ fn dessiner_equipe(
     });
 }
 
+/// Portrait 38 px d'un champion affiché par son nom. Le verrou des textures n'est
+/// pris que le temps du dessin (jamais gardé d'une trame à l'autre).
+fn portrait(ui: &mut Ui, partage: Option<&PortraitsPartage>, donnees: Option<&DonneesJeu>, nom: &str) -> egui::Response {
+    let id = format::id_dd_depuis_nom(donnees, nom);
+    match partage.and_then(|p| p.lock().ok()) {
+        Some(mut p) => composants::portrait(ui, &mut p, id.as_deref(), None, TaillePortrait::Ligne),
+        None => ui.allocate_response(egui::vec2(38.0, 38.0), egui::Sense::hover()),
+    }
+}
+
 /// Barre horizontale AP (bleu) / AD (orange).
 fn barre_ap_ad(ui: &mut Ui, ap_pct: u8) {
     ui.horizontal(|ui| {
@@ -159,15 +176,13 @@ fn courbe(ui: &mut Ui, valeurs: [f32; 3]) {
         let (rect, reponse) = ui.allocate_exact_size(egui::vec2(10.0, 22.0), egui::Sense::hover());
         let haut = rect.bottom() - rect.height() * format::fraction(v, 3.0);
         ui.painter().rect_filled(rect, 1.0, theme::CADRE.gamma_multiply(2.0));
-        ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(rect.left(), haut), rect.max), 1.0, theme::TURQUOISE);
+        ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(rect.left(), haut), rect.max), 1.0, theme::OR);
         reponse.on_hover_text(format!("{nom} : {}/3", format::decimal(v, 1)));
     }
 }
 
 fn dessiner_runes(ui: &mut Ui, r: &VueRunes) {
-    theme::carte().show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
-        theme::titre(ui, "Runes conseillées");
+    composants::panneau(ui, Some("Runes conseillées"), |ui| {
         ui.label(RichText::new(&r.page).strong());
         ui.horizontal_wrapped(|ui| {
             stat(ui, "victoires", &format::pourcent(r.winrate));
@@ -188,9 +203,7 @@ fn dessiner_runes(ui: &mut Ui, r: &VueRunes) {
 
 /// Adversaire de lane, contre-picks, meilleurs / pires duels.
 fn dessiner_matchups(ui: &mut Ui, cs: &VueChampSelect) {
-    theme::carte().show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
-        theme::titre(ui, "Matchups");
+    composants::panneau(ui, Some("Matchups"), |ui| {
         if let Some(adv) = &cs.adversaire_lane {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("Adversaire probable :").color(theme::TEXTE_DOUX));
@@ -227,8 +240,7 @@ fn dessiner_matchups(ui: &mut Ui, cs: &VueChampSelect) {
 
 /// Objets conseillés : core, bottes, situationnels.
 fn dessiner_objets(ui: &mut Ui, o: &VueObjets) {
-    theme::carte().show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
+    composants::panneau(ui, None, |ui| {
         ui.horizontal(|ui| {
             theme::titre(ui, "Objets conseillés");
             ui.label(RichText::new(format!("{} parties analysées", format::milliers(o.parties))).color(theme::TEXTE_DOUX).small());

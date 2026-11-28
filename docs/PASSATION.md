@@ -65,3 +65,31 @@ Rangs, historique, récap, fiche d'un autre joueur et Arena demandent une vraie 
    démo dans le thread de lecture, propriétaire du presse-papiers, position des graduations.
 5. Fiches OTP (F35-F40) : il faut l'export CSV du Google Sheet du propriétaire.
 6. Audit de conformité Riot (T24) avant de partager plus largement, puis release v0.3.0.
+
+## État au 2026-11-28 (soir) : refonte graphique « thème D »
+Branche `feature/design` (non fusionnée dans la branche d'intégration). Spécification : `docs/DESIGN.md`.
+- **Fait** : palette unique (`src/ui/palette.rs`), thème et composants (`theme.rs`, `composants.rs`),
+  police Cinzel en sous-ensemble (25 Ko), portraits de champions (`icones.rs` + `ui/textures.rs`, cache
+  disque par patch, 48 textures au plus), notes en étoiles (`note.rs`, formule v1 provisoire),
+  données de mon joueur en partie (`live.rs`, `reperes.rs`), overlay GDI restylé avec deux états
+  (réduit / ouvert), écrans Accueil, Fiche, Partie, Historique, Tier list, Champ select refaits.
+  221 tests, clippy propre, relecture qualité faite (M1-M3 corrigés). Exe release : 5,85 Mo.
+- **Jamais vu à l'écran** : aucun écran du thème n'a été regardé sur Windows. À faire : quitter l'ancienne
+  app, lancer `target\design\release\stat-traque.exe` (ou recompiler : `cargo build --release` avec
+  `CARGO_TARGET_DIR=target\design`), parcourir chaque onglet, noter ce qui est cassé ou illisible.
+- **Mesures RAM/CPU du thème** : pas encore faites (LoL fermé, `scripts\mesure.ps1` arrête tous les
+  `stat-traque.exe` en cours : ne pas le lancer pendant une partie).
+- **Reste à faire** :
+  1. Valider les poids de la note (tableau dans `note.rs`) puis ajouter un champ `note` par joueur et par
+     partie (`affichage.rs`, historique) pour allumer les étoiles de l'accueil, de la partie et de la fiche
+     (histogramme des notes de la fiche aussi).
+  2. Basculement réduit/ouvert de la petite fenêtre (`overlay_natif::basculer_reduit`, jamais appelée) :
+     raccourci secondaire ou entrée du menu de l'icône, sans prendre le focus du jeu.
+  3. Or du joueur : demande une requête `activeplayer` toutes les 5 s (décision du propriétaire) ; l'or
+     contre l'adversaire reste interdit tant que l'audit de conformité T24 ne l'a pas validé.
+  4. Collecte des stats du patch (`stat-traque collecter`), puis correction de `stats.yml`.
+  5. Identifiant de file de la 5v5 (file du week-end 16 h-2 h) : à lire dans le journal pendant une partie.
+  6. Défauts connus : `ui/mod.rs` garde un `#![allow(dead_code)]` global à resserrer ; `couleur_palette`
+     (overlay_natif.rs) est un pont temporaire.
+- **Paquet pour un testeur** : branche `feature/portabilite`, `scripts\paquet.ps1` (vérifie qu'aucun chemin
+  personnel ni clé n'est dans l'exe). Il embarque l'ancienne interface (branche d'intégration).

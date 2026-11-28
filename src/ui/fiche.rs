@@ -11,7 +11,8 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, RichText, Stroke, Ui};
 
 use super::ecrans::couleur_winrate;
 use super::protocole::Demande;
-use super::{enfant, format, radar, theme};
+use super::composants::{self, TaillePortrait};
+use super::{enfant, format, radar, textures, theme};
 use crate::affichage::{EtatAffichage, VueCibleFiche, VueFiche, VueMmr};
 use crate::ddragon::DonneesJeu;
 
@@ -74,7 +75,7 @@ pub fn dessiner(ui: &mut Ui, etat: &EtatAffichage, onglet: &mut EtatOnglet, copi
         ui.vertical_centered(|ui| ui.label(RichText::new(texte).color(theme::TEXTE_DOUX).size(15.0)));
         return;
     };
-    dessiner_fiche(ui, f, copie);
+    dessiner_fiche(ui, f, copie, donnees);
 }
 
 /// Boutons du haut : « Ma fiche », choix d'un joueur de la partie, chargement.
@@ -124,48 +125,22 @@ fn libelle_cible(c: &VueCibleFiche, donnees: Option<&DonneesJeu>) -> String {
     format!("{} ({})", c.nom, format::nom_champion(donnees, c.champion))
 }
 
-fn dessiner_fiche(ui: &mut Ui, f: &VueFiche, copie: &mut RetourCopie) {
-    // En-tête : nom, rang, copier.
-    ui.horizontal_wrapped(|ui| {
-        let nom = if f.moi { "Ma fiche".to_string() } else { format!("Fiche de {}", f.nom) };
-        ui.label(RichText::new(nom).color(theme::OR).strong().size(20.0));
-        match &f.rang {
-            Some(r) => ui.label(RichText::new(r).color(theme::couleur_palier(palier_anglais(r))).strong().size(16.0)),
-            None => ui.label(RichText::new("Non classé").color(theme::TEXTE_DOUX)),
-        };
-        ui.add_space(12.0);
-        copie.bouton(ui, "fiche", &f.texte_partage);
-    });
+fn dessiner_fiche(ui: &mut Ui, f: &VueFiche, copie: &mut RetourCopie, donnees: Option<&DonneesJeu>) {
+    entete(ui, f, copie, donnees);
     if let Some(e) = &f.erreur {
         ui.label(RichText::new(format!("! {e}")).color(theme::ALERTE));
     }
-    ui.add_space(6.0);
+    ui.add_space(8.0);
 
-    // Radar à gauche, MMR + forme + style à droite.
+    // Radar + spécificités à gauche ; forme et détail du MMR à droite.
     ui.columns(2, |col| {
-        theme::carte().show(&mut col[0], |ui| {
-            ui.set_min_width(ui.available_width());
-            theme::titre(ui, &format!("Radar vs {} même rôle", f.palier_reference));
+        composants::panneau(&mut col[0], Some(&format!("Radar vs {} même rôle", f.palier_reference)), |ui| {
             dessiner_radar(ui, f);
-            let mut note = format!("50 = moyenne du palier · {} parties analysées", f.parties_analysees);
-            if f.reference_approximative {
-                note += " · référence approximative";
-            }
-            ui.label(RichText::new(note).color(theme::TEXTE_DOUX).small());
-        });
-        let ui = &mut col[1];
-        theme::carte().show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            dessiner_mmr(ui, f.mmr.as_ref());
-        });
-        ui.add_space(8.0);
-        theme::carte().show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            theme::titre(ui, "Forme récente");
-            dessiner_forme(ui, &f.forme, f.serie);
+            ui.label(RichText::new(note_radar(f)).color(theme::TEXTE_SECONDAIRE).small());
             if !f.etiquettes.is_empty() {
-                ui.add_space(6.0);
-                theme::titre(ui, "Style de jeu");
+                ui.add_space(8.0);
+                theme::titre(ui, "Spécificités");
+                ui.add_space(2.0);
                 ui.horizontal_wrapped(|ui| {
                     for e in &f.etiquettes {
                         chip(ui, e);
@@ -173,23 +148,114 @@ fn dessiner_fiche(ui: &mut Ui, f: &VueFiche, copie: &mut RetourCopie) {
                 });
             }
         });
+        let ui = &mut col[1];
+        composants::panneau(ui, Some("Forme récente"), |ui| dessiner_forme(ui, &f.forme, f.serie));
+        ui.add_space(8.0);
+        composants::panneau(ui, None, |ui| dessiner_mmr(ui, f.mmr.as_ref()));
     });
     ui.add_space(8.0);
     ui.columns(2, |col| {
-        theme::carte().show(&mut col[0], |ui| {
-            ui.set_min_width(ui.available_width());
-            theme::titre(ui, "Champions");
-            dessiner_champions(ui, f);
-        });
-        theme::carte().show(&mut col[1], |ui| {
-            ui.set_min_width(ui.available_width());
-            theme::titre(ui, "Rôles");
-            dessiner_roles(ui, f);
-        });
+        composants::panneau(&mut col[0], Some("Champions"), |ui| dessiner_champions(ui, f, donnees));
+        composants::panneau(&mut col[1], Some("Rôles"), |ui| dessiner_roles(ui, f));
     });
     ui.add_space(6.0);
     let requetes = if f.requetes == 0 { "0 requête Riot (base locale)".to_string() } else { format!("{} requêtes Riot", f.requetes) };
-    ui.label(RichText::new(format!("{requetes} · MMR et radar sont des estimations à partir des données officielles Riot.")).color(theme::TEXTE_DOUX).small());
+    ui.label(RichText::new(format!("{requetes} · MMR et radar sont des estimations à partir des données officielles Riot.")).color(theme::TEXTE_SECONDAIRE).small());
+}
+
+// ---------------------------------------------------------------- Fonctions pures (testées)
+
+/// Titre de la fiche : « Ma fiche » ou « Fiche de Pseudo#TAG ».
+fn titre_fiche(moi: bool, nom: &str) -> String {
+    if moi { "Ma fiche".to_string() } else { format!("Fiche de {nom}") }
+}
+
+/// Nom (anglais) du champion principal = le plus joué (la liste est déjà triée).
+fn champion_principal(f: &VueFiche) -> Option<&str> {
+    f.champions.first().map(|c| c.champion.as_str())
+}
+
+/// Ligne sous le radar : « 50 = moyenne du palier · 12 parties analysées ».
+fn note_radar(f: &VueFiche) -> String {
+    let mut note = format!("50 = moyenne du palier · {} analysée", format::pluriel(f.parties_analysees, "partie"));
+    if f.parties_analysees >= 2 {
+        note.push('s');
+    }
+    if f.reference_approximative {
+        note += " · référence approximative";
+    }
+    note
+}
+
+/// Texte de la série : « 3 victoires d'affilée », « 1 défaite d'affilée », vide à 0.
+fn texte_serie(serie: i32) -> String {
+    match serie {
+        0 => String::new(),
+        s if s > 0 => format!("{} d'affilée", format::pluriel(s as u32, "victoire")),
+        s => format!("{} d'affilée", format::pluriel(s.unsigned_abs(), "défaite")),
+    }
+}
+
+/// Les 10 dernières parties en booléens (true = victoire). Les lettres inconnues sont ignorées.
+fn resultats_forme(forme: &str) -> Vec<bool> {
+    forme.chars().filter(|c| matches!(c, 'V' | 'D')).take(10).map(|c| c == 'V').collect()
+}
+
+/// Libellé d'un rôle : « 54 % · 1 partie ».
+fn texte_role(part: f32, parties: u32) -> String {
+    format!("{} · {}", format::pourcent_entier(part), format::pluriel(parties, "partie"))
+}
+
+/// Couleur de la confiance du MMR.
+fn couleur_confiance(confiance: &str) -> Color32 {
+    match confiance {
+        "bonne" => theme::VERT,
+        "moyenne" => theme::OR,
+        _ => theme::ALERTE,
+    }
+}
+
+// ---------------------------------------------------------------- En-tête
+
+/// Portrait via le cache partagé : le verrou n'est tenu que le temps du dessin du
+/// portrait, jamais d'une trame à l'autre. Sans cache, on réserve juste la place.
+fn portrait(ui: &mut Ui, id_dd: Option<&str>, t: TaillePortrait) {
+    if let Some(partage) = textures::portraits(ui.ctx()) {
+        if let Ok(mut p) = partage.lock() {
+            composants::portrait(ui, &mut p, id_dd, None, t);
+            return;
+        }
+    }
+    ui.allocate_space(egui::vec2(t.cote(), t.cote()));
+}
+
+/// Portrait 66 px du champion principal, nom, rang, MMR estimé + confiance, bouton Discord.
+fn entete(ui: &mut Ui, f: &VueFiche, copie: &mut RetourCopie, donnees: Option<&DonneesJeu>) {
+    composants::panneau(ui, None, |ui| {
+        ui.horizontal(|ui| {
+            let id_dd = champion_principal(f).and_then(|n| format::id_dd_depuis_nom(donnees, n));
+            let id_dd = id_dd.as_deref().or_else(|| champion_principal(f));
+            portrait(ui, id_dd, TaillePortrait::Fiche);
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(titre_fiche(f.moi, &f.nom)).font(theme::police_titre(20.0)).color(theme::OR));
+                ui.horizontal_wrapped(|ui| {
+                    match &f.rang {
+                        Some(r) => ui.label(RichText::new(r).color(theme::couleur_palier(palier_anglais(r))).size(16.0)),
+                        None => ui.label(RichText::new("Non classé").color(theme::TEXTE_SECONDAIRE)),
+                    };
+                    if let Some(m) = &f.mmr {
+                        ui.label(RichText::new("·").color(theme::TEXTE_SECONDAIRE));
+                        ui.label(RichText::new(format!("MMR ≈ {}", m.rang_equivalent)).color(theme::TEXTE));
+                        ui.label(RichText::new("(estimation)").color(theme::TEXTE_SECONDAIRE).italics().small());
+                        ui.label(RichText::new(format!("confiance {}", m.confiance)).color(couleur_confiance(&m.confiance)));
+                    }
+                });
+                ui.add_space(4.0);
+                copie.bouton(ui, "fiche", &f.texte_partage);
+            });
+        });
+    });
 }
 
 /// Le rang affiché est en français (« Émeraude II 45 LP ») ; la couleur se cherche
@@ -210,21 +276,21 @@ fn pos(p: [f32; 2]) -> Pos2 {
 fn dessiner_radar(ui: &mut Ui, f: &VueFiche) {
     let n = f.radar.len();
     if n < 3 {
-        ui.label(RichText::new("Pas assez de données pour le radar.").color(theme::TEXTE_DOUX));
+        ui.label(RichText::new("Pas assez de données pour le radar.").color(theme::TEXTE_SECONDAIRE));
         return;
     }
     let cote = ui.available_width().clamp(220.0, 380.0);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), cote * 0.86), egui::Sense::hover());
     let c = [rect.center().x, rect.center().y + 4.0];
     // Place pour les libellés autour : ~70 px à gauche / à droite, ~22 px en haut / en bas.
-    let rayon = (rect.width() / 2.0 - 78.0).min(rect.height() / 2.0 - 24.0).max(40.0);
+    let rayon = radar::rayon_pour(rect.width(), rect.height());
     let p = ui.painter_at(rect.expand(4.0));
-    let trait_toile = Stroke::new(1.0, theme::OR_SOMBRE.gamma_multiply(0.7));
+    let trait_toile = Stroke::new(1.0, theme::OR_SOMBRE.gamma_multiply(0.8));
 
     // Toile : graduations 25 / 50 / 75 / 100 (50 = moyenne, un peu plus marquée) + axes.
     for g in radar::GRADUATIONS.iter().copied().chain([100]) {
         let points = radar::toile(c, rayon * g as f32 / 100.0, n).into_iter().map(pos).collect();
-        let s = if g == 50 { Stroke::new(1.2, theme::OR_SOMBRE) } else { trait_toile };
+        let s = if g == 50 { Stroke::new(1.0, theme::OR_SOMBRE) } else { trait_toile };
         p.add(egui::Shape::closed_line(points, s));
     }
     for i in 0..n {
@@ -234,7 +300,7 @@ fn dessiner_radar(ui: &mut Ui, f: &VueFiche) {
         // Valeur de la graduation, ENTRE les axes 0 et 1 (sur un axe, elle cacherait
         // la valeur du sommet) : l'angle « 1 sur 2n » tombe pile au milieu.
         let q = radar::point(c, rayon, 1, 2 * n, g as f32 / 100.0);
-        p.text(pos(q), Align2::CENTER_CENTER, g.to_string(), FontId::proportional(9.0), theme::TEXTE_DOUX.gamma_multiply(0.7));
+        p.text(pos(q), Align2::CENTER_CENTER, g.to_string(), FontId::proportional(9.0), theme::TEXTE_SECONDAIRE.gamma_multiply(0.7));
     }
 
     // Polygone des scores : rempli en « éventail » depuis le centre (marche même si
@@ -242,7 +308,7 @@ fn dessiner_radar(ui: &mut Ui, f: &VueFiche) {
     let scores: Vec<Option<u8>> = f.radar.iter().map(|a| a.score).collect();
     let points: Vec<Pos2> = radar::polygone(c, rayon, &scores).into_iter().map(pos).collect();
     let mut maillage = egui::Mesh::default();
-    let remplissage = Color32::from_rgba_unmultiplied(10, 200, 185, 60);
+    let remplissage = theme::OR.gamma_multiply(0.2);
     maillage.colored_vertex(pos(c), remplissage);
     for q in &points {
         maillage.colored_vertex(*q, remplissage);
@@ -251,7 +317,7 @@ fn dessiner_radar(ui: &mut Ui, f: &VueFiche) {
         maillage.add_triangle(0, 1 + i, 1 + (i + 1) % n as u32);
     }
     p.add(egui::Shape::mesh(maillage));
-    p.add(egui::Shape::closed_line(points.clone(), Stroke::new(2.0, theme::TURQUOISE)));
+    p.add(egui::Shape::closed_line(points.clone(), Stroke::new(1.5, theme::OR)));
 
     // Sommets : point + valeur ; bout des axes : libellé.
     for (i, axe) in f.radar.iter().enumerate() {
@@ -259,17 +325,17 @@ fn dessiner_radar(ui: &mut Ui, f: &VueFiche) {
         let aligne = Align2([aligne_h(h), aligne_v(v)]);
         let decale = |q: [f32; 2], d: f32| pos([q[0] + h as f32 * d, q[1] + v as f32 * d]);
         let bout = radar::sommet(c, rayon, i, n);
-        let couleur_nom = if axe.score.is_some() { theme::TEXTE } else { theme::TEXTE_DOUX };
+        let couleur_nom = if axe.score.is_some() { theme::TEXTE } else { theme::TEXTE_SECONDAIRE };
         p.text(decale(bout, 8.0), aligne, &axe.nom, FontId::proportional(13.0), couleur_nom);
         match axe.score {
             Some(s) => {
-                p.circle_filled(points[i], 3.5, theme::TURQUOISE);
+                p.circle_filled(points[i], 3.0, theme::OR);
                 let valeur = radar::point(c, rayon, i, n, s as f32 / 100.0);
                 p.text(decale(valeur, 6.0), aligne, s.to_string(), FontId::proportional(12.0), couleur_score(s));
             }
             None => {
                 let q = radar::point(c, rayon, i, n, 0.18);
-                p.text(pos(q), Align2::CENTER_CENTER, "?", FontId::proportional(12.0), theme::TEXTE_DOUX);
+                p.text(pos(q), Align2::CENTER_CENTER, "?", FontId::proportional(12.0), theme::TEXTE_SECONDAIRE);
             }
         }
     }
@@ -307,95 +373,82 @@ fn couleur_score(s: u8) -> Color32 {
 fn dessiner_mmr(ui: &mut Ui, mmr: Option<&VueMmr>) {
     ui.horizontal(|ui| {
         theme::titre(ui, "MMR estimé");
-        ui.label(RichText::new("estimation").color(theme::TEXTE_DOUX).italics().small());
+        ui.label(RichText::new("estimation").color(theme::TEXTE_SECONDAIRE).italics().small());
     });
+    ui.add_space(2.0);
     let Some(m) = mmr else {
-        ui.label(RichText::new("Pas assez de parties classées récentes pour l'estimer.").color(theme::TEXTE_DOUX));
+        ui.label(RichText::new("Pas assez de parties classées récentes pour l'estimer.").color(theme::TEXTE_SECONDAIRE));
         return;
     };
     ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new(&m.rang_equivalent).color(theme::couleur_palier(palier_anglais(m.rang_equivalent.trim_start_matches('~')))).strong().size(20.0));
+        ui.label(RichText::new(&m.rang_equivalent).color(theme::couleur_palier(palier_anglais(m.rang_equivalent.trim_start_matches('~')))).size(20.0));
         let couleur = match m.ecart_lp {
             e if e >= 20 => theme::VERT,
             e if e <= -20 => theme::EQUIPE_ROUGE,
             _ => theme::TEXTE,
         };
-        ui.label(RichText::new(format!("{:+} LP", m.ecart_lp)).color(couleur).strong());
-        ui.label(RichText::new("vs rang affiché").color(theme::TEXTE_DOUX));
+        ui.label(RichText::new(format!("{:+} LP", m.ecart_lp)).color(couleur));
+        ui.label(RichText::new("vs rang affiché").color(theme::TEXTE_SECONDAIRE));
     });
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Confiance :").color(theme::TEXTE_DOUX));
-        let couleur = match m.confiance.as_str() {
-            "bonne" => theme::VERT,
-            "moyenne" => theme::OR,
-            _ => theme::ALERTE,
-        };
-        ui.label(RichText::new(&m.confiance).color(couleur));
+        ui.label(RichText::new("Confiance :").color(theme::TEXTE_SECONDAIRE));
+        ui.label(RichText::new(&m.confiance).color(couleur_confiance(&m.confiance)));
     });
     for r in &m.raisons {
-        ui.label(RichText::new(format!("• {r}")).color(theme::TEXTE_DOUX).small());
+        ui.label(RichText::new(format!("• {r}")).color(theme::TEXTE_SECONDAIRE).small());
     }
-    ui.label(RichText::new("Riot ne publie pas le MMR : ceci est une estimation.").color(theme::TEXTE_DOUX).italics().small());
+    ui.label(RichText::new("Riot ne publie pas le MMR : ceci est une estimation.").color(theme::TEXTE_SECONDAIRE).italics().small());
 }
 
-/// Les 10 dernières parties : une case verte (V) ou rouge (D), la plus récente à gauche.
+/// Les 10 dernières parties : pastilles V / D (plus récente à gauche) et la série en cours.
 fn dessiner_forme(ui: &mut Ui, forme: &str, serie: i32) {
-    if forme.is_empty() {
-        ui.label(RichText::new("Aucune partie récente.").color(theme::TEXTE_DOUX));
+    let resultats = resultats_forme(forme);
+    if resultats.is_empty() {
+        ui.label(RichText::new("Aucune partie récente.").color(theme::TEXTE_SECONDAIRE));
         return;
     }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 3.0;
-        for lettre in forme.chars().take(10) {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
-            let (fond, texte) = match lettre {
-                'V' => (theme::VERT.gamma_multiply(0.75), "V"),
-                'D' => (theme::EQUIPE_ROUGE.gamma_multiply(0.75), "D"),
-                _ => (theme::CADRE, "?"),
-            };
-            ui.painter().rect_filled(rect, 3.0, fond);
-            ui.painter().text(rect.center(), Align2::CENTER_CENTER, texte, FontId::proportional(12.0), Color32::WHITE);
+        for &victoire in &resultats {
+            composants::pastille_victoire(ui, victoire);
         }
         ui.add_space(10.0);
-        let (texte, couleur) = match serie {
-            s if s > 0 => (format!("{s} victoire(s) d'affilée"), theme::VERT),
-            s if s < 0 => (format!("{} défaite(s) d'affilée", -s), theme::EQUIPE_ROUGE),
-            _ => (String::new(), theme::TEXTE),
-        };
-        ui.label(RichText::new(texte).color(couleur));
+        let couleur = if serie > 0 { theme::VICTOIRE } else { theme::DEFAITE };
+        ui.label(RichText::new(texte_serie(serie)).color(couleur));
     });
-    let victoires = forme.chars().filter(|&c| c == 'V').count();
-    ui.label(RichText::new(format!("{victoires} V / {} D", forme.chars().count() - victoires)).color(theme::TEXTE_DOUX).small());
+    let victoires = resultats.iter().filter(|&&v| v).count();
+    ui.label(RichText::new(format!("{victoires} V / {} D", resultats.len() - victoires)).color(theme::TEXTE_SECONDAIRE).small());
 }
 
-/// Étiquette arrondie (« Farmer », « One-trick »...).
+/// Étiquette à angles droits (« Farmer », « One-trick »...) : filet or, texte clair.
 fn chip(ui: &mut Ui, texte: &str) {
     egui::Frame::NONE
-        .fill(Color32::from_rgb(20, 50, 70))
-        .stroke(Stroke::new(1.0, theme::TURQUOISE.gamma_multiply(0.6)))
-        .corner_radius(egui::CornerRadius::same(10))
+        .fill(theme::LIGNE_RANGEE)
+        .stroke(Stroke::new(1.0, theme::OR_SOMBRE))
+        .corner_radius(egui::CornerRadius::ZERO)
         .inner_margin(egui::Margin::symmetric(9, 3))
-        .show(ui, |ui| ui.label(RichText::new(texte).color(theme::TURQUOISE)));
+        .show(ui, |ui| ui.label(RichText::new(texte).color(theme::TEXTE)));
 }
 
 // ---------------------------------------------------------------- Champions, rôles
 
-fn dessiner_champions(ui: &mut Ui, f: &VueFiche) {
+fn dessiner_champions(ui: &mut Ui, f: &VueFiche, donnees: Option<&DonneesJeu>) {
     if f.champions.is_empty() {
-        ui.label(RichText::new("Aucune partie analysée.").color(theme::TEXTE_DOUX));
+        ui.label(RichText::new("Aucune partie analysée.").color(theme::TEXTE_SECONDAIRE));
         return;
     }
-    egui::Grid::new("fiche_champions").num_columns(5).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-        for entete in ["Champion", "Parties", "Victoires", "Part", "KDA"] {
-            ui.label(RichText::new(entete).color(theme::TEXTE_DOUX).small());
+    egui::Grid::new("fiche_champions").num_columns(5).spacing([14.0, 6.0]).show(ui, |ui| {
+        for entete in ["", "Champion", "Parties", "Victoires", "KDA"] {
+            ui.label(RichText::new(entete).color(theme::TEXTE_SECONDAIRE).small());
         }
         ui.end_row();
         for c in f.champions.iter().take(5) {
-            ui.label(RichText::new(&c.champion).strong());
-            ui.label(c.parties.to_string());
+            let id_dd = format::id_dd_depuis_nom(donnees, &c.champion);
+            portrait(ui, id_dd.as_deref().or(Some(c.champion.as_str())), TaillePortrait::Ligne);
+            ui.label(RichText::new(&c.champion).color(theme::TEXTE));
+            ui.label(RichText::new(format::pluriel(c.parties, "partie")).color(theme::TEXTE));
             ui.label(RichText::new(format::pourcent_entier(c.winrate)).color(couleur_winrate(c.winrate)));
-            ui.label(format::pourcent_entier(c.part));
-            ui.label(format::decimal(c.kda, 1));
+            ui.label(RichText::new(format::decimal(c.kda, 1)).color(theme::TEXTE));
             ui.end_row();
         }
     });
@@ -403,15 +456,102 @@ fn dessiner_champions(ui: &mut Ui, f: &VueFiche) {
 
 fn dessiner_roles(ui: &mut Ui, f: &VueFiche) {
     if f.roles.is_empty() {
-        ui.label(RichText::new("Rôles inconnus.").color(theme::TEXTE_DOUX));
+        ui.label(RichText::new("Rôles inconnus.").color(theme::TEXTE_SECONDAIRE));
         return;
     }
-    egui::Grid::new("fiche_roles").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+    egui::Grid::new("fiche_roles").num_columns(3).spacing([12.0, 8.0]).show(ui, |ui| {
         for r in &f.roles {
-            ui.label(RichText::new(crate::fiche::role_fr(&r.role)).strong());
-            ui.add(egui::ProgressBar::new(format::fraction(r.part, 100.0)).desired_width(140.0).desired_height(10.0).fill(theme::OR_SOMBRE));
-            ui.label(RichText::new(format!("{} · {} parties", format::pourcent_entier(r.part), r.parties)).color(theme::TEXTE_DOUX));
+            ui.label(RichText::new(crate::fiche::role_fr(&r.role)).color(theme::TEXTE));
+            composants::barre(ui, format::fraction(r.part, 100.0), 140.0);
+            ui.label(RichText::new(texte_role(r.part, r.parties)).color(theme::TEXTE_SECONDAIRE));
             ui.end_row();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::affichage::{VueAxeRadar, VueChampionFiche, VueRoleFiche};
+
+    fn fiche() -> VueFiche {
+        VueFiche {
+            puuid: "p".into(),
+            nom: "Test#EUW".into(),
+            rang: Some("Émeraude II 45 LP".into()),
+            palier_reference: "Émeraude".into(),
+            radar: ["Combat", "Farm", "Vision", "Objectifs", "Phase de lane", "Survie", "Agressivité"]
+                .iter()
+                .enumerate()
+                .map(|(i, n)| VueAxeRadar { nom: n.to_string(), score: if i == 2 { None } else { Some(40 + i as u8 * 8) } })
+                .collect(),
+            mmr: Some(VueMmr { rang_equivalent: "~Émeraude I".into(), ecart_lp: 30, confiance: "moyenne".into(), raisons: vec!["gains moyens +24 LP".into()] }),
+            champions: vec![
+                VueChampionFiche { champion: "Ahri".into(), parties: 1, victoires: 1, winrate: 100.0, part: 10.0, kda: 3.2 },
+                VueChampionFiche { champion: "Inconnu".into(), parties: 5, victoires: 2, winrate: 40.0, part: 50.0, kda: 2.0 },
+            ],
+            roles: vec![VueRoleFiche { role: "middle".into(), parties: 1, part: 100.0 }],
+            etiquettes: vec!["Farmer".into()],
+            forme: "VVDVD".into(),
+            serie: 2,
+            parties_analysees: 1,
+            texte_partage: "texte".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn titres() {
+        assert_eq!(titre_fiche(true, "X"), "Ma fiche");
+        assert_eq!(titre_fiche(false, "A#B"), "Fiche de A#B");
+    }
+
+    #[test]
+    fn champion_principal_est_le_premier() {
+        assert_eq!(champion_principal(&fiche()), Some("Ahri"));
+        assert_eq!(champion_principal(&VueFiche::default()), None);
+    }
+
+    #[test]
+    fn pluriels_corrects() {
+        assert_eq!(texte_serie(0), "");
+        assert_eq!(texte_serie(1), "1\u{a0}victoire d'affilée");
+        assert_eq!(texte_serie(-3), "3\u{a0}défaites d'affilée");
+        assert_eq!(texte_role(54.4, 1), "54\u{a0}% · 1\u{a0}partie");
+        assert!(texte_role(10.0, 3).ends_with("parties"));
+        let mut f = fiche();
+        assert!(note_radar(&f).contains("1\u{a0}partie analysée") && !note_radar(&f).contains("parties"));
+        f.parties_analysees = 12;
+        f.reference_approximative = true;
+        assert!(note_radar(&f).contains("12\u{a0}parties analysées") && note_radar(&f).ends_with("approximative"));
+    }
+
+    #[test]
+    fn forme_ignore_les_lettres_inconnues_et_borne_a_10() {
+        assert_eq!(resultats_forme("VD?V"), vec![true, false, true]);
+        assert_eq!(resultats_forme("VVVVVVVVVVVVVV").len(), 10);
+        assert!(resultats_forme("").is_empty());
+    }
+
+    #[test]
+    fn confiance_coloree() {
+        assert_eq!(couleur_confiance("bonne"), theme::VERT);
+        assert_eq!(couleur_confiance("moyenne"), theme::OR);
+        assert_eq!(couleur_confiance("faible"), theme::ALERTE);
+    }
+
+    /// Dessin complet (avec et sans données) dans un contexte egui sans fenêtre : pas de panique.
+    #[test]
+    fn dessin_sans_panique() {
+        let ctx = egui::Context::default();
+        theme::appliquer(&ctx);
+        let vide = VueFiche { radar: vec![], ..Default::default() };
+        for f in [fiche(), vide] {
+            let mut copie = RetourCopie::default();
+            for _ in 0..2 {
+                let mut sortie = ctx.run_ui(Default::default(), |ui| dessiner_fiche(ui, &f, &mut copie, None));
+                sortie.textures_delta.clear();
+            }
+        }
+    }
 }

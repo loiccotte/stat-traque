@@ -51,6 +51,12 @@ pub fn ancrage(i: usize, n: usize) -> (i8, i8) {
     (signe(a.cos()), signe(a.sin()))
 }
 
+/// Rayon de la toile dans une zone de `largeur` x `hauteur` : on garde ~78 px de
+/// chaque côté et ~24 px en haut / en bas pour les libellés, avec un minimum de 40.
+pub fn rayon_pour(largeur: f32, hauteur: f32) -> f32 {
+    (largeur / 2.0 - 78.0).min(hauteur / 2.0 - 24.0).max(40.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +105,12 @@ mod tests {
         assert_eq!(ancrage(1, 7).0, 1, "à droite : le texte part vers la droite");
         assert_eq!(ancrage(6, 7).0, -1);
         assert_eq!(ancrage(3, 7).1, 1, "en bas : en dessous");
+    }
+
+    #[test]
+    fn rayon_borne() {
+        assert_eq!(rayon_pour(400.0, 300.0), 122.0, "limité par la largeur : 200 - 78");
+        assert_eq!(rayon_pour(1000.0, 200.0), 76.0, "limité par la hauteur : 100 - 24");
+        assert_eq!(rayon_pour(10.0, 10.0), 40.0, "jamais sous 40");
     }
 }

@@ -12,9 +12,11 @@
 
 use eframe::egui::{self, RichText, Ui};
 
+use super::ecran_accueil::dessiner_accueil;
 use super::ecran_champselect::dessiner_champ_select;
 use super::ecran_divers::{dessiner_journal, dessiner_reglages};
 use super::ecran_partie::dessiner_partie;
+use super::composants;
 use super::format;
 use super::onglets::{onglet_conseille, Onglet};
 use super::reglages::FormReglages;
@@ -47,7 +49,7 @@ pub struct Ecran {
 impl Ecran {
     pub fn nouveau(etat: &EtatAffichage) -> Self {
         Self {
-            onglet: onglet_conseille(etat.phase).unwrap_or(Onglet::Journal),
+            onglet: onglet_conseille(etat.phase).unwrap_or(Onglet::Accueil),
             phase_vue: etat.phase,
             form: FormReglages::depuis(&Reglages::charger()),
             retour_reglages: None,
@@ -74,7 +76,7 @@ pub fn dessiner(ui: &mut Ui, ecran: &mut Ecran, etat: &EtatAffichage) {
         .frame(egui::Frame::NONE.fill(theme::CADRE).inner_margin(egui::Margin::symmetric(12, 8)))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("stat-traque").color(theme::OR).strong().size(18.0));
+                titre_application(ui);
                 ui.add_space(12.0);
                 let couleur = if etat.client_connecte { theme::VERT } else { theme::TEXTE_DOUX };
                 // Pastille de couleur (dessinée : la police par défaut n'a pas le caractère ●).
@@ -83,15 +85,9 @@ pub fn dessiner(ui: &mut Ui, ecran: &mut Ecran, etat: &EtatAffichage) {
                 ui.label(RichText::new(format::statut(etat.client_connecte, etat.phase, etat.cle_api)).color(theme::TEXTE_DOUX));
             });
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                for o in Onglet::TOUS.into_iter().filter(|o| o.visible(etat)) {
-                    let texte = RichText::new(o.libelle()).size(14.0);
-                    let texte = if ecran.onglet == o { texte.color(theme::OR).strong() } else { texte };
-                    if ui.selectable_label(ecran.onglet == o, texte).clicked() {
-                        ecran.onglet = o;
-                    }
-                }
-            });
+            // Barre d'onglets du design : texte or + soulignement or sur l'actif.
+            let visibles: Vec<Onglet> = Onglet::TOUS.into_iter().filter(|o| o.visible(etat)).collect();
+            composants::onglets(ui, &mut ecran.onglet, &visibles);
         });
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(theme::FOND).inner_margin(egui::Margin::same(12)))
@@ -109,6 +105,7 @@ pub fn dessiner(ui: &mut Ui, ecran: &mut Ecran, etat: &EtatAffichage) {
 fn dessiner_onglet(ui: &mut Ui, ecran: &mut Ecran, etat: &EtatAffichage) {
     let donnees = etat.donnees.as_deref();
     match ecran.onglet {
+        Onglet::Accueil => dessiner_accueil(ui, etat),
         Onglet::ChampSelect => match &etat.champ_select {
             Some(cs) => dessiner_champ_select(ui, cs, donnees),
             None => vide(ui, "Pas de champ select en cours. Lance une partie : l'analyse s'affichera ici."),
@@ -129,6 +126,19 @@ fn dessiner_onglet(ui: &mut Ui, ecran: &mut Ecran, etat: &EtatAffichage) {
         Onglet::Journal => dessiner_journal(ui, &etat.messages),
         Onglet::Reglages => dessiner_reglages(ui, ecran),
     }
+}
+
+/// Titre « STAT-TRAQUE » : Cinzel or, capitales espacées, précédé d'un petit losange or.
+fn titre_application(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+    let pts = composants::sommets_losange(rect.center(), 5.0, 5.0).to_vec();
+    ui.painter().add(egui::Shape::convex_polygon(pts, theme::OR, egui::Stroke::NONE));
+    ui.label(
+        RichText::new("STAT-TRAQUE")
+            .font(theme::police_titre(18.0))
+            .extra_letter_spacing(2.0)
+            .color(theme::OR),
+    );
 }
 
 /// Message centré quand un onglet n'a rien à montrer.

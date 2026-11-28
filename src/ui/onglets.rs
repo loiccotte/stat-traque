@@ -13,6 +13,8 @@ use crate::gameflow::Phase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Onglet {
+    /// Mon compte, mes champions, dernières parties (onglet par défaut).
+    Accueil,
     ChampSelect,
     Partie,
     /// Fiche joueur (moi ou un joueur de la partie) : radar, MMR estimé...
@@ -25,7 +27,8 @@ pub enum Onglet {
 
 impl Onglet {
     /// Ordre d'affichage dans la barre d'onglets.
-    pub const TOUS: [Onglet; 7] = [
+    pub const TOUS: [Onglet; 8] = [
+        Onglet::Accueil,
         Onglet::ChampSelect,
         Onglet::Partie,
         Onglet::Fiche,
@@ -37,6 +40,7 @@ impl Onglet {
 
     pub fn libelle(self) -> &'static str {
         match self {
+            Onglet::Accueil => "Accueil",
             Onglet::ChampSelect => "Champ select",
             Onglet::Partie => "Partie",
             Onglet::Fiche => "Fiche",
@@ -82,6 +86,8 @@ mod tests {
         assert_eq!(onglet_conseille(Some(Phase::EndOfGame)), Some(Onglet::Historique));
         assert_eq!(onglet_conseille(Some(Phase::Lobby)), None);
         assert_eq!(onglet_conseille(None), None);
+        assert_eq!(Onglet::TOUS[0], Onglet::Accueil);
+        assert!(Onglet::Accueil.visible(&EtatAffichage::default()));
         assert!(Onglet::TOUS.iter().all(|o| !o.libelle().is_empty()));
         assert!(!Onglet::TierList.visible(&EtatAffichage::default()));
         assert!(Onglet::Historique.visible(&EtatAffichage::default()));

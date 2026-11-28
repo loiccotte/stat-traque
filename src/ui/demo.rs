@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::affichage::{
     EtatAffichage, VueAxeRadar, VueChampSelect, VueChampionFiche, VueCibleFiche, VueFiche, VueMatchup, VueMmr, VueObjet,
-    VueObjets, VueRoleFiche, VueRunes, VueTier, VueTierList,
+    VueLiveMoi, VueObjets, VueRoleFiche, VueRunes, VueTier, VueTierList,
 };
 use crate::compo;
 use crate::ddragon::{Champion, DonneesJeu};
@@ -143,7 +143,31 @@ pub fn etat(phase: Phase) -> EtatAffichage {
             .enumerate()
             .map(|(i, c)| VueCibleFiche { puuid: format!("demo-puuid-{i}"), nom: format!("Joueur{} #EUW", i + 1), champion: c.0 })
             .collect(),
+        // Mes chiffres à 14 min 07 s, cohérents avec ma ligne de `JoueurLive` (niveau 9, 80 CS).
+        live_moi: Some(VueLiveMoi { secondes: 14 * 60 + 7, cs: 80, niveau: 9, or: 5_480, forme: Some(72) }),
     }
+}
+
+/// Rôles de la démo, dans l'ordre de `CHAMPIONS` (5 bleus puis 5 rouges).
+const ROLES_DEMO: [&str; 10] = ["middle", "jungle", "top", "bottom", "utility", "middle", "jungle", "top", "bottom", "utility"];
+/// Niveau de jeu de chaque joueur (score d'axe moyen) : un joueur par lettre D à S,
+/// puis les mêmes en désordre. Le dernier n'a pas de note (voir `note_joueur`).
+const NIVEAUX_DEMO: [u8; 10] = [82, 96, 67, 52, 30, 67, 82, 52, 96, 30];
+/// Écart de chaque axe au niveau du joueur (les axes ne sont pas tous égaux).
+const ECARTS_DEMO: [i16; 7] = [4, -3, 6, -5, 2, -2, 0];
+
+/// Note de démonstration du joueur `i` (index dans `CHAMPIONS`), calculée par la VRAIE
+/// formule (`note::note_partie`) à partir de scores d'axes inventés. Couvre D, C, B, A et S ;
+/// le joueur 9 (non classé) a une référence approximative : donc `None`, pas de note.
+/// Le modèle d'affichage n'a pas encore de champ « note » : l'écran la calcule d'ici.
+#[allow(dead_code)] // branché par les tâches d'interface suivantes
+pub fn note_joueur(i: usize) -> Option<u8> {
+    let niveau = *NIVEAUX_DEMO.get(i)? as i16;
+    let mut scores = [None; 7];
+    for (s, ecart) in scores.iter_mut().zip(ECARTS_DEMO) {
+        *s = Some((niveau + ecart).clamp(0, 100) as u8);
+    }
+    crate::note::note_partie(&scores, Some(ROLES_DEMO[i]), i == 9)
 }
 
 /// Fiche de démonstration : la mienne (`None`) ou celle d'un joueur de la partie.
@@ -292,5 +316,22 @@ mod tests {
         assert_eq!(format::nom_depuis_id_dd(d, "MonkeyKing"), "Wukong");
         assert_eq!(format::noms_objets(d, &[3142, 1]).len(), 1);
         assert!(e.champ_select.unwrap().analyse_allies.unwrap().nombre > 0);
+    }
+
+    #[test]
+    fn la_demo_a_des_notes_variees_et_une_ligne_sans_note() {
+        use crate::note::lettre;
+        let notes: Vec<Option<u8>> = (0..10).map(note_joueur).collect();
+        let mut lettres: Vec<char> = notes.iter().flatten().map(|n| lettre(*n)).collect();
+        lettres.sort_unstable();
+        lettres.dedup();
+        assert_eq!(lettres, ['A', 'B', 'C', 'D', 'S'], "{notes:?}");
+        assert_eq!(notes[9], None);
+        assert!(note_joueur(10).is_none());
+        // Mes chiffres en direct sont présents et cohérents avec ma ligne de la partie.
+        let e = etat(Phase::InProgress);
+        let moi = e.live_moi.unwrap();
+        assert_eq!(moi.secondes, e.partie.unwrap().secondes);
+        assert!(moi.forme.is_some_and(|f| f <= 100));
     }
 }

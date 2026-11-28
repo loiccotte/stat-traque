@@ -64,7 +64,15 @@ pub fn bilan(rang: &Rang) -> String {
     if parties == 0 {
         return String::new();
     }
-    format!("{} · {} parties", pourcent_entier(rang.winrate()), milliers(parties))
+    format!("{} · {}", pourcent_entier(rang.winrate()), pluriel(parties, "partie"))
+}
+
+/// Nombre suivi du nom accordé : 0 et 1 restent au singulier (règle française),
+/// 2 et plus prennent un « s ». `pluriel(1, "partie")` -> `"1 partie"`,
+/// `pluriel(1200, "partie")` -> `"1 200 parties"` (espaces insécables).
+pub fn pluriel(n: u32, singulier: &str) -> String {
+    let s = if n >= 2 { "s" } else { "" };
+    format!("{}\u{a0}{singulier}{s}", milliers(n))
 }
 
 /// Pourcentage sans décimale : `54.4` -> `"54 %"`.
@@ -141,6 +149,13 @@ pub fn nom_depuis_id_dd(donnees: Option<&DonneesJeu>, id: &str) -> String {
         .map_or_else(|| id.to_string(), |c| c.nom.to_string())
 }
 
+/// Identifiant Data Dragon texte d'un champion à partir de son nom affiché
+/// ("Wukong" -> "MonkeyKing"), pour retrouver son icône. Sans tenir compte de la casse.
+/// Recherche linéaire sur ~170 champions, sans table supplémentaire en mémoire.
+pub fn id_dd_depuis_nom(donnees: Option<&DonneesJeu>, nom: &str) -> Option<String> {
+    donnees?.champions.values().find(|c| c.nom.eq_ignore_ascii_case(nom)).map(|c| c.id.to_string())
+}
+
 /// Noms des objets d'un joueur (les inconnus sont ignorés).
 pub fn noms_objets(donnees: Option<&DonneesJeu>, items: &[u32]) -> Vec<String> {
     let Some(d) = donnees else { return Vec::new() };
@@ -213,9 +228,12 @@ pub fn groupes<T>(joueurs: &[T], sans_equipes: bool, bleu: impl Fn(&T) -> bool) 
 /// Texte de statut affiché en haut de la fenêtre.
 pub fn statut(connecte: bool, phase: Option<Phase>, cle_api: bool) -> String {
     let client = if connecte { "Client LoL connecté" } else { "En attente du client LoL" };
-    let phase = phase.map_or("—", Phase::libelle);
     let cle = if cle_api { "clé API OK" } else { "pas de clé API (rangs indisponibles)" };
-    format!("{client} · {phase} · {cle}")
+    // Phase inconnue : on omet le segment (pas de « — » isolé entre deux « · »).
+    match phase {
+        Some(p) => format!("{client} · {} · {cle}", p.libelle()),
+        None => format!("{client} · {cle}"),
+    }
 }
 
 /// Position de l'overlay lue dans les réglages (`overlay_position=x,y`).
@@ -447,6 +465,31 @@ mod tests {
     }
 
     #[test]
+    fn pluriel_francais() {
+        assert_eq!(pluriel(0, "partie"), "0\u{a0}partie");
+        assert_eq!(pluriel(1, "partie"), "1\u{a0}partie");
+        assert_eq!(pluriel(2, "partie"), "2\u{a0}parties");
+        assert_eq!(pluriel(3400, "victoire"), "3\u{a0}400\u{a0}victoires");
+    }
+
+    #[test]
+    fn statut_sans_phase_sans_tiret_isole() {
+        let s = statut(true, None, true);
+        assert_eq!(s, "Client LoL connecté · clé API OK");
+        assert!(!s.contains('—'));
+        assert!(statut(false, Some(Phase::InProgress), true).contains(" · "));
+    }
+
+    #[test]
+    fn id_dd_depuis_le_nom_affiche() {
+        let d = crate::ui::demo::donnees();
+        assert_eq!(id_dd_depuis_nom(Some(&d), "Wukong").as_deref(), Some("MonkeyKing"));
+        assert_eq!(id_dd_depuis_nom(Some(&d), "lee sin").as_deref(), Some("LeeSin"));
+        assert_eq!(id_dd_depuis_nom(Some(&d), "Inconnu"), None);
+        assert_eq!(id_dd_depuis_nom(None, "Zed"), None);
+    }
+
+    #[test]
     fn duree_et_kda() {
         assert_eq!(duree(725), "12:05");
         assert_eq!(duree(59), "0:59");
@@ -460,7 +503,9 @@ mod tests {
         let r = rang("EMERALD", "II", 45, 65, 55);
         assert_eq!(rang_ou_non_classe(Some(&r)), "Emerald II 45 LP");
         assert_eq!(rang_ou_non_classe(None), "Non classé");
-        assert_eq!(bilan(&r), "54\u{a0}% · 120 parties");
+        assert_eq!(bilan(&r), "54\u{a0}% · 120\u{a0}parties");
+        assert_eq!(bilan(&rang("GOLD", "I", 0, 1, 0)), "100\u{a0}% · 1\u{a0}partie");
+        assert_eq!(bilan(&rang("GOLD", "I", 0, 700, 500)), "58\u{a0}% · 1\u{a0}200\u{a0}parties");
         assert_eq!(bilan(&rang("GOLD", "I", 0, 0, 0)), "");
         assert_eq!(rang_court(Some(&r)), "E2 45 LP");
         assert_eq!(rang_court(Some(&rang("MASTER", "", 120, 1, 1))), "M 120 LP");

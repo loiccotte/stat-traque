@@ -13,7 +13,10 @@
 //!   protocole.rs     messages JSON principal -> enfant, et demandes enfant -> principal (pur, testé)
 //!   enfant.rs        côté enfant : la fenêtre egui (`stat-traque --fenetre`)
 //!   overlay_natif.rs overlay Windows natif (GDI), dans le thread de l'icône
-//!   ecrans.rs        dessin des onglets de la fenêtre principale
+//!   ecrans.rs        cadre commun de la fenêtre (état, titre, onglets, statut)
+//!   ecran_*.rs       contenu des onglets : accueil, champselect, partie, divers (journal, réglages)
+//!   composants.rs    composants du thème (panneau, étoiles, portrait...) ; textures.rs : portraits
+//!   palette.rs       jetons de couleur du thème (pur, testé)
 //!   historique.rs    onglets Historique (parties, stats, LP, récap) et Tier list
 //!   fiche.rs         onglet Fiche (radar, MMR estimé...) et boutons « Copier pour Discord »
 //!   radar.rs         géométrie du radar de la fiche (pur, testé)
@@ -33,10 +36,21 @@
 pub mod demo;
 pub mod format;
 pub mod onglets;
+pub mod palette;
 pub mod protocole;
 pub mod radar;
 pub mod reglages;
 
+#[cfg(any(windows, target_os = "linux"))]
+mod composants;
+#[cfg(any(windows, target_os = "linux"))]
+mod ecran_accueil;
+#[cfg(any(windows, target_os = "linux"))]
+mod ecran_champselect;
+#[cfg(any(windows, target_os = "linux"))]
+mod ecran_divers;
+#[cfg(any(windows, target_os = "linux"))]
+mod ecran_partie;
 #[cfg(any(windows, target_os = "linux"))]
 mod ecrans;
 #[cfg(any(windows, target_os = "linux"))]
@@ -53,6 +67,8 @@ mod overlay;
 pub mod overlay_natif;
 #[cfg(any(windows, target_os = "linux"))]
 mod parent;
+#[cfg(any(windows, target_os = "linux"))]
+mod textures;
 #[cfg(any(windows, target_os = "linux"))]
 mod theme;
 

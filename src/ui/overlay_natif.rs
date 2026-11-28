@@ -20,7 +20,7 @@
 //! aucun timer. Invisible en « Plein écran » exclusif : mode « Sans bordure » requis.
 
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 use std::sync::{Mutex, Once};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -31,6 +31,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::format::{self, Cellule};
 use super::palette::{self, Rgb};
+use crate::affichage::VueLiveMoi;
+use crate::reperes;
 
 static FENETRE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
 static POLICE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
@@ -38,13 +40,133 @@ static POLICE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
 static DPI_POLICE: AtomicU32 = AtomicU32::new(0);
 /// Ce qui est affiché : grille, largeur de chaque colonne, DPI utilisé.
 /// Sert aussi à ne RIEN refaire si l'état a changé sans toucher aux rangs.
-static CONTENU: Mutex<Contenu> = Mutex::new(Contenu { grille: Vec::new(), largeurs: Vec::new(), dpi: 0 });
+static CONTENU: Mutex<Contenu> = Mutex::new(Contenu { grille: Vec::new(), largeurs: Vec::new(), dpi: 0, live: Vec::new() });
+/// Petite fenêtre en jeu : `true` = état RÉDUIT (une ligne), `false` = état OUVERT (défaut).
+/// Aucun raccourci secondaire n'existe encore : voir `basculer_reduit` (à brancher par tray.rs / ui/mod.rs).
+static REDUIT: AtomicBool = AtomicBool::new(false);
 static CLASSE: Once = Once::new();
 
 struct Contenu {
     grille: Vec<Vec<Cellule>>,
     largeurs: Vec<i32>,
     dpi: u32,
+    /// Bloc « mes chiffres en direct » affiché au-dessus du tableau (vide = absent).
+    live: Vec<LigneLive>,
+}
+
+/// Une ligne de la petite fenêtre : texte à gauche, valeur alignée à droite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LigneLive {
+    gauche: String,
+    droite: String,
+    couleur: Rgb,
+}
+
+/// Largeur de la petite fenêtre ouverte, en pixels à 100 %.
+const LARGEUR_OUVERT: i32 = 290;
+/// Espace entre le bloc live et le tableau, en pixels à 100 %.
+const ESPACE_BLOC: i32 = 6;
+
+/// Nombre à une décimale avec la virgule française : 7.2 -> « 7,2 ».
+fn decimale(x: f32) -> String {
+    format!("{x:.1}").replace('.', ",")
+}
+
+/// Écart signé à une décimale : « +1,3 », « -0,4 », « 0,0 ».
+fn ecart_decimal(ecart: f32) -> String {
+    let arrondi = (ecart * 10.0).round() / 10.0;
+    if arrondi > 0.0 {
+        format!("+{}", decimale(arrondi))
+    } else if arrondi < 0.0 {
+        format!("-{}", decimale(-arrondi))
+    } else {
+        decimale(0.0)
+    }
+}
+
+/// Écart de niveau signé : « +1 », « -2 », « = ».
+fn ecart_niveau(ecart: i32) -> String {
+    match ecart {
+        0 => "=".into(),
+        e if e > 0 => format!("+{e}"),
+        e => format!("{e}"),
+    }
+}
+
+/// CS par minute réels, ou `None` avant la première minute (valeur trop instable).
+fn cs_par_minute(cs: u16, secondes: u32) -> Option<f32> {
+    (secondes >= 60).then(|| cs as f32 * 60.0 / secondes as f32)
+}
+
+/// Entier groupé par milliers avec une espace : 5480 -> « 5 480 ».
+fn milliers(n: u32) -> String {
+    let chiffres = n.to_string();
+    let mut sortie = String::new();
+    for (i, c) in chiffres.chars().enumerate() {
+        if i > 0 && (chiffres.len() - i) % 3 == 0 {
+            sortie.push(' ');
+        }
+        sortie.push(c);
+    }
+    sortie
+}
+
+/// État RÉDUIT : « 7,2 cs/min · niveau 9 » (+ « · 5 480 or » si l'or est connu, > 0).
+fn texte_reduit(v: &VueLiveMoi) -> String {
+    let mut t = match cs_par_minute(v.cs, v.secondes) {
+        Some(x) => format!("{} cs/min · niveau {}", decimale(x), v.niveau),
+        None => format!("{} cs · niveau {}", v.cs, v.niveau),
+    };
+    if v.or > 0 {
+        t += &format!(" · {} or", milliers(v.or));
+    }
+    t
+}
+
+/// État OUVERT : lignes CS/min + repère indicatif, niveau + niveau attendu, forme (si connue),
+/// or (si connu). Aucune donnée adverse, aucun timer.
+fn lignes_ouvertes(v: &VueLiveMoi) -> Vec<LigneLive> {
+    let ligne = |g: &str, d: String, couleur| LigneLive { gauche: g.into(), droite: d, couleur };
+    let mut l = Vec::new();
+    let repere = reperes::cs_min_attendu(v.secondes);
+    match cs_par_minute(v.cs, v.secondes) {
+        Some(x) => {
+            let couleur = if x >= repere { palette::VICTOIRE } else { palette::TEXTE };
+            l.push(ligne("CS par minute", decimale(x), couleur));
+            l.push(ligne("repère indicatif", format!("{} ({})", decimale(repere), ecart_decimal(x - repere)), palette::TEXTE_SECONDAIRE));
+        }
+        None => {
+            l.push(ligne("CS par minute", "—".into(), palette::TEXTE));
+            l.push(ligne("repère indicatif", decimale(repere), palette::TEXTE_SECONDAIRE));
+        }
+    }
+    let attendu = reperes::niveau_attendu(v.secondes);
+    l.push(ligne("Niveau", v.niveau.to_string(), palette::TEXTE));
+    l.push(ligne("repère indicatif", format!("{} ({})", attendu, ecart_niveau(v.niveau as i32 - attendu as i32)), palette::TEXTE_SECONDAIRE));
+    if let Some(f) = v.forme {
+        l.push(ligne("Forme", format!("{f} / 100"), palette::TEXTE));
+    }
+    if v.or > 0 {
+        l.push(ligne("Or", milliers(v.or), palette::ACCENT));
+    }
+    l
+}
+
+/// Lignes du bloc live selon l'état réduit / ouvert (vide si aucune donnée live).
+fn lignes_live(v: Option<&VueLiveMoi>, reduit: bool) -> Vec<LigneLive> {
+    match v {
+        None => Vec::new(),
+        Some(v) if reduit => vec![LigneLive { gauche: texte_reduit(v), droite: String::new(), couleur: palette::TEXTE }],
+        Some(v) => lignes_ouvertes(v),
+    }
+}
+
+/// Bascule réduit <-> ouvert sans prendre le focus (aucun clic nécessaire) et redessine.
+/// Thread de l'icône. Pas encore appelée : il manque un raccourci secondaire (hors de ce module).
+#[allow(dead_code)]
+pub unsafe fn basculer_reduit() {
+    REDUIT.fetch_xor(true, Ordering::AcqRel);
+    redessiner();
 }
 
 // Tailles en pixels à 100 % (multipliées par l'échelle de l'écran).
@@ -148,6 +270,7 @@ pub unsafe fn afficher(visible: bool) {
             FENETRE.store(null_mut(), Ordering::Release);
             let mut c = CONTENU.lock().unwrap();
             c.grille.clear();
+            c.live.clear();
             c.dpi = 0;
         }
         _ => {}
@@ -215,10 +338,11 @@ pub unsafe fn redessiner() {
     // Seulement ce qu'il faut, lu sous le verrou (pas de copie de tout l'état).
     let grille =
         crate::affichage::avec(|e| format::grille_overlay(&e.rangs, e.donnees.as_deref(), e.cle_api, e.sans_equipes));
+    let live = lignes_live(crate::affichage::avec(|e| e.live_moi.clone()).as_ref(), REDUIT.load(Ordering::Acquire));
     let dpi = dpi(fenetre);
     {
         let c = CONTENU.lock().unwrap();
-        if c.grille == grille && c.dpi == dpi {
+        if c.grille == grille && c.dpi == dpi && c.live == live {
             return; // l'état a changé, mais pas les rangs : aucun dessin
         }
     }
@@ -235,13 +359,36 @@ pub unsafe fn redessiner() {
             largeurs[i] = largeurs[i].max(taille.cx);
         }
     }
+    // Largeur du bloc live : fixe (~290 px) à l'état ouvert, texte le plus large sinon.
+    let mut largeur_live = 0;
+    if !live.is_empty() {
+        for l in &live {
+            let t: Vec<u16> = l.gauche.encode_utf16().collect();
+            let mut taille = SIZE { cx: 0, cy: 0 };
+            GetTextExtentPoint32W(dc, t.as_ptr(), t.len() as i32, &mut taille);
+            largeur_live = largeur_live.max(taille.cx + 2 * echelle(MARGE, dpi));
+        }
+        if !REDUIT.load(Ordering::Acquire) {
+            largeur_live = largeur_live.max(echelle(LARGEUR_OUVERT, dpi));
+        }
+    }
     SelectObject(dc, ancienne);
     ReleaseDC(fenetre, dc);
-    let largeur = 2 * echelle(MARGE, dpi) + largeurs.iter().sum::<i32>() + ecarts(colonnes, dpi);
-    let hauteur = 2 * echelle(MARGE, dpi) + echelle(HAUTEUR_LIGNE, dpi) * grille.len() as i32;
-    *CONTENU.lock().unwrap() = Contenu { grille, largeurs, dpi };
+    let largeur_grille = 2 * echelle(MARGE, dpi) + largeurs.iter().sum::<i32>() + ecarts(colonnes, dpi);
+    let largeur = largeur_grille.max(largeur_live);
+    let hauteur = 2 * echelle(MARGE, dpi) + echelle(HAUTEUR_LIGNE, dpi) * grille.len() as i32 + hauteur_bloc_live(live.len(), dpi);
+    *CONTENU.lock().unwrap() = Contenu { grille, largeurs, dpi, live };
     SetWindowPos(fenetre, HWND_TOPMOST, 0, 0, largeur, hauteur, SWP_NOMOVE | SWP_NOACTIVATE);
     InvalidateRect(fenetre, null_mut(), 1);
+}
+
+/// Hauteur du bloc live (lignes + espace avant le tableau), 0 s'il est vide.
+fn hauteur_bloc_live(lignes: usize, dpi: u32) -> i32 {
+    if lignes == 0 {
+        0
+    } else {
+        echelle(HAUTEUR_LIGNE, dpi) * lignes as i32 + echelle(ESPACE_BLOC, dpi)
+    }
 }
 
 /// Espace avant la colonne `i` (plus grand entre les deux équipes).
@@ -282,13 +429,29 @@ unsafe fn dessiner_cadre(dc: HDC, zone: &RECT, dpi: u32) {
 }
 
 /// Contenu actuel : le texte de chaque case, dans la couleur de la palette.
-unsafe fn dessiner_grille(dc: HDC, contenu: &Contenu) {
+unsafe fn dessiner_grille(dc: HDC, contenu: &Contenu, zone: &RECT) {
     let dpi = contenu.dpi.max(96);
     let ancienne = SelectObject(dc, police(dpi));
     SetBkMode(dc, TRANSPARENT as i32);
+    // Bloc « mes chiffres » : libellé à gauche, valeur alignée à droite.
+    for (n, l) in contenu.live.iter().enumerate() {
+        let y = echelle(MARGE, dpi) + n as i32 * echelle(HAUTEUR_LIGNE, dpi);
+        let gauche: Vec<u16> = l.gauche.encode_utf16().collect();
+        // Ligne réduite (pas de valeur) : texte dans sa couleur ; sinon libellé en gris.
+        SetTextColor(dc, colorref(if l.droite.is_empty() { l.couleur } else { palette::TEXTE_SECONDAIRE }));
+        TextOutW(dc, echelle(MARGE, dpi), y, gauche.as_ptr(), gauche.len() as i32);
+        if !l.droite.is_empty() {
+            let droite: Vec<u16> = l.droite.encode_utf16().collect();
+            SetTextColor(dc, colorref(l.couleur));
+            SetTextAlign(dc, TA_RIGHT);
+            TextOutW(dc, zone.right - echelle(MARGE, dpi), y, droite.as_ptr(), droite.len() as i32);
+            SetTextAlign(dc, TA_LEFT);
+        }
+    }
+    let decalage = hauteur_bloc_live(contenu.live.len(), dpi);
     for (n, ligne) in contenu.grille.iter().enumerate() {
         let mut x = echelle(MARGE, dpi);
-        let y = echelle(MARGE, dpi) + n as i32 * echelle(HAUTEUR_LIGNE, dpi);
+        let y = echelle(MARGE, dpi) + decalage + n as i32 * echelle(HAUTEUR_LIGNE, dpi);
         for (i, c) in ligne.iter().enumerate() {
             if i > 0 {
                 x += ecart_avant(i, dpi);
@@ -309,7 +472,7 @@ unsafe fn peindre(fenetre: HWND) {
     GetClientRect(fenetre, &mut zone);
     let contenu = CONTENU.lock().unwrap();
     dessiner_cadre(dc, &zone, contenu.dpi.max(96));
-    dessiner_grille(dc, &contenu);
+    dessiner_grille(dc, &contenu, &zone);
     EndPaint(fenetre, &ps);
 }
 
@@ -335,6 +498,53 @@ unsafe extern "system" fn procedure(fenetre: HWND, msg: u32, wparam: WPARAM, lpa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vue(secondes: u32, cs: u16, niveau: u8, or: u32, forme: Option<u8>) -> VueLiveMoi {
+        VueLiveMoi { secondes, cs, niveau, or, forme }
+    }
+
+    #[test]
+    fn mise_en_forme_des_nombres() {
+        assert_eq!(decimale(7.2), "7,2");
+        assert_eq!(ecart_decimal(1.26), "+1,3");
+        assert_eq!(ecart_decimal(-0.44), "-0,4");
+        assert_eq!(ecart_decimal(-0.01), "0,0");
+        assert_eq!(ecart_niveau(0), "=");
+        assert_eq!(ecart_niveau(2), "+2");
+        assert_eq!(ecart_niveau(-1), "-1");
+        assert_eq!(milliers(5480), "5 480");
+        assert_eq!(milliers(480), "480");
+        assert_eq!(milliers(12_345_678), "12 345 678");
+    }
+
+    #[test]
+    fn ligne_reduite() {
+        // 100 CS en 10 min = 10,0 ; or inconnu (0) : non affiché.
+        assert_eq!(texte_reduit(&vue(600, 72, 9, 0, None)), "7,2 cs/min · niveau 9");
+        assert_eq!(texte_reduit(&vue(600, 72, 9, 5480, None)), "7,2 cs/min · niveau 9 · 5 480 or");
+        // Avant 1 minute : pas de cs/min instable.
+        assert_eq!(texte_reduit(&vue(30, 2, 1, 0, None)), "2 cs · niveau 1");
+    }
+
+    #[test]
+    fn lignes_ouvertes_forme_et_or_optionnels() {
+        let sans = lignes_ouvertes(&vue(600, 72, 9, 0, None));
+        assert_eq!(sans.len(), 4);
+        assert_eq!(sans[0].gauche, "CS par minute");
+        assert_eq!(sans[1].gauche, "repère indicatif");
+        assert_eq!(sans[1].droite, "5,5 (+1,7)");
+        assert!(!sans.iter().any(|l| l.gauche == "Forme" || l.gauche == "Or"));
+        let avec = lignes_ouvertes(&vue(600, 72, 9, 100, Some(72)));
+        assert!(avec.iter().any(|l| l.gauche == "Forme" && l.droite == "72 / 100"));
+        assert!(avec.iter().any(|l| l.gauche == "Or"));
+    }
+
+    #[test]
+    fn bloc_live_absent_sans_donnees() {
+        assert!(lignes_live(None, false).is_empty());
+        assert_eq!(hauteur_bloc_live(0, 96), 0);
+        assert_eq!(lignes_live(Some(&vue(600, 72, 9, 0, None)), true).len(), 1);
+    }
 
     #[test]
     fn colorref_ordre_bgr() {

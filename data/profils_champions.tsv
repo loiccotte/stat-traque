@@ -1,0 +1,196 @@
+# Profils de champions pour l'analyse de composition (module src/compo.rs).
+# Une ligne par champion, colonnes séparées par une TABULATION. Les lignes qui
+# commencent par # sont des commentaires et sont ignorées.
+#
+# Colonnes :
+#  1. id        : identifiant Data Dragon (ex. MonkeyKing = Wukong, Fiddlesticks)
+#  2. roles     : rôles réellement joués, séparés par des virgules
+#                 (top, jungle, middle, bottom, utility = format LCU)
+#  3. ap        : part des dégâts magiques en % (0 = tout physique, 100 = tout magique)
+#  4. engage    : capacité à lancer un combat (0 à 3)
+#  5. poke      : harcèlement à distance avant le combat (0 à 3)
+#  6. allin     : dive / burst / gros engagement sur une cible (0 à 3)
+#  7. pick      : capacité à attraper une cible isolée (0 à 3)
+#  8. peel      : protection des alliés, surtout du carry (0 à 3)
+#  9. cc        : quantité de contrôle (étourdissements, ralentissements...) (0 à 3)
+# 10. frontline : capacité à encaisser devant l'équipe (0 à 3)
+# 11. split     : capacité à pousser seul une ligne (split push) (0 à 3)
+# 12. teamfight : impact dans un combat à 5 (0 à 3)
+# 13. early     : puissance en début de partie, ~0-14 min (0 à 3)
+# 14. mid       : puissance en milieu de partie, ~14-28 min (0 à 3)
+# 15. late      : puissance en fin de partie, 28 min et plus (0 à 3)
+# 16. portee    : m = mêlée, d = distance
+#
+#id	roles	ap	eng	poke	allin	pick	peel	cc	front	split	tf	early	mid	late	portee
+Aatrox	top	0	2	1	2	1	0	2	2	2	3	3	3	2	m
+Ahri	middle	100	1	2	2	3	1	2	0	1	2	2	3	2	d
+Akali	middle,top	85	1	0	3	2	0	0	0	2	1	2	3	2	m
+Akshan	middle,top	10	0	1	2	2	0	0	0	2	1	2	3	2	d
+Alistar	utility	100	3	0	2	2	3	3	3	0	3	2	3	2	m
+Ambessa	top,middle	0	2	0	3	1	0	1	1	2	2	3	3	2	m
+Amumu	jungle,utility	100	3	0	2	1	1	3	3	0	3	1	3	3	m
+Anivia	middle	100	1	2	1	2	2	3	0	1	3	1	3	3	d
+Annie	middle,utility	100	2	1	3	2	1	3	0	0	3	2	3	2	d
+Aphelios	bottom	0	0	1	1	1	1	1	0	0	3	1	2	3	d
+Ashe	bottom,utility	0	2	2	1	3	2	3	0	0	2	2	2	3	d
+AurelionSol	middle	100	1	2	1	0	0	1	0	1	3	1	2	3	d
+Aurora	middle,top	100	1	2	2	2	1	2	0	1	3	2	3	2	d
+Azir	middle	100	2	2	1	1	2	2	0	2	3	1	2	3	d
+Bard	utility	100	2	1	1	3	2	3	0	0	2	2	2	2	d
+Belveth	jungle	0	1	0	2	1	0	1	1	2	2	2	3	3	m
+Blitzcrank	utility	100	2	0	2	3	1	3	1	0	1	3	2	1	m
+Brand	utility,middle,jungle	100	1	2	2	1	0	2	0	0	3	2	3	2	d
+Braum	utility	100	1	0	1	0	3	3	3	0	3	3	2	2	m
+Briar	jungle	0	2	0	3	2	0	1	1	1	2	3	3	1	m
+Caitlyn	bottom	0	0	3	1	2	1	1	0	1	1	3	2	3	d
+Camille	top	10	1	0	3	3	0	2	1	3	2	2	3	3	m
+Cassiopeia	middle,top	100	0	2	1	1	1	3	0	1	3	2	3	3	d
+Chogath	top,middle	80	2	1	2	2	1	3	3	1	3	2	2	3	m
+Corki	middle	65	0	3	1	1	0	0	0	1	2	1	3	3	d
+Darius	top	0	1	0	3	1	0	2	2	2	3	3	3	1	m
+Diana	jungle,middle	100	3	0	3	1	0	2	1	2	3	2	3	2	m
+Draven	bottom	0	0	1	2	1	0	1	0	0	2	3	3	2	d
+DrMundo	top,jungle	25	1	1	0	0	1	1	3	3	2	2	3	3	m
+Ekko	jungle,middle	100	1	1	3	2	0	2	0	2	2	2	3	2	m
+Elise	jungle	100	1	1	2	3	0	2	0	0	1	3	2	1	d
+Evelynn	jungle	100	0	0	3	3	0	1	0	0	1	1	3	2	m
+Ezreal	bottom	30	0	3	1	0	0	0	0	1	1	2	3	2	d
+Fiddlesticks	jungle	100	3	0	2	1	0	3	0	0	3	1	3	3	d
+Fiora	top	0	0	0	2	1	0	1	0	3	1	2	3	3	m
+Fizz	middle	100	0	0	3	2	0	1	0	1	1	2	3	2	m
+Galio	middle,utility	100	3	1	2	1	3	3	2	0	3	2	3	2	m
+Gangplank	top	30	0	3	1	0	0	1	0	2	3	1	2	3	m
+Garen	top	0	0	0	2	1	0	1	2	2	1	2	3	2	m
+Gnar	top	0	2	1	2	1	1	2	2	2	3	2	3	2	d
+Gragas	jungle,top,utility	100	3	1	2	2	2	3	2	0	3	2	3	2	m
+Graves	jungle	0	0	0	2	1	0	0	1	1	2	3	3	2	d
+Gwen	top,jungle	100	0	0	2	1	0	0	1	3	2	1	3	3	m
+Hecarim	jungle	0	3	0	3	2	0	2	2	1	3	2	3	2	m
+Heimerdinger	middle,top,utility	100	0	3	0	1	2	2	0	1	2	2	2	1	d
+Hwei	middle,utility	100	1	3	1	2	2	3	0	0	3	1	3	3	d
+Illaoi	top	0	0	1	1	0	0	1	2	3	2	2	3	2	m
+Irelia	top,middle	0	2	0	3	1	0	2	1	3	2	2	3	2	m
+Ivern	jungle	100	1	0	0	1	3	2	0	0	2	1	2	2	d
+Janna	utility	100	0	1	0	1	3	3	0	0	2	1	2	2	d
+JarvanIV	jungle	0	3	0	3	2	0	3	2	0	3	3	3	1	m
+Jax	top	30	1	0	2	1	0	2	1	3	2	2	3	3	m
+Jayce	top,middle	0	0	3	2	1	0	1	0	2	1	3	3	1	d
+Jhin	bottom	0	0	3	1	2	0	2	0	0	2	2	3	2	d
+Jinx	bottom	0	0	2	0	1	0	2	0	0	3	1	2	3	d
+Kaisa	bottom	40	0	1	3	1	0	0	0	0	2	1	3	3	d
+Kalista	bottom	0	1	1	1	1	2	2	0	0	2	3	3	1	d
+Karma	utility,middle	100	1	3	1	0	3	2	0	0	2	3	2	1	d
+Karthus	jungle,middle	100	0	1	1	0	0	1	0	0	3	1	3	3	d
+Kassadin	middle	100	0	0	3	2	0	1	0	1	1	0	2	3	m
+Katarina	middle	90	0	0	3	1	0	0	0	1	3	2	3	2	m
+Kayle	top	70	0	1	0	0	2	1	0	2	3	0	2	3	d
+Kayn	jungle	0	1	0	3	2	0	1	1	1	2	1	3	3	m
+Kennen	top	100	3	1	2	0	0	3	0	1	3	2	3	2	d
+Khazix	jungle	0	0	0	3	3	0	0	0	1	1	2	3	2	m
+Kindred	jungle	0	0	1	1	1	2	1	0	1	2	2	3	3	d
+Kled	top	0	3	0	3	1	0	1	2	1	2	3	3	1	m
+KogMaw	bottom	30	0	2	0	0	0	1	0	0	3	1	2	3	d
+KSante	top	0	2	0	2	2	2	3	3	1	3	2	3	2	m
+Leblanc	middle	100	0	2	3	3	0	2	0	1	1	2	3	1	d
+LeeSin	jungle	0	2	0	3	3	1	2	1	1	2	3	3	1	m
+Leona	utility	100	3	0	3	2	1	3	3	0	3	3	3	2	m
+Lillia	jungle	100	2	1	1	1	0	3	1	0	3	2	3	2	m
+Lissandra	middle	100	3	0	3	2	2	3	1	0	3	2	3	2	d
+Lucian	bottom,middle	0	0	1	2	1	0	0	0	1	1	3	3	1	d
+Lulu	utility	100	0	1	0	0	3	3	0	0	2	2	2	3	d
+Lux	middle,utility	100	1	3	2	3	2	3	0	0	2	2	3	2	d
+Malphite	top,utility	100	3	1	3	1	1	3	3	0	3	1	3	3	m
+Malzahar	middle	100	0	1	2	3	1	3	0	2	2	2	3	2	d
+Maokai	utility,jungle,top	100	3	1	1	2	3	3	3	0	3	2	3	2	m
+MasterYi	jungle	0	0	0	2	1	0	0	0	2	2	1	3	3	m
+Mel	middle,utility	100	0	3	2	1	2	2	0	0	2	2	3	2	d
+Milio	utility	100	0	1	0	0	3	2	0	0	2	1	2	3	d
+MissFortune	bottom	0	0	2	1	0	0	1	0	0	3	2	3	2	d
+MonkeyKing	top,jungle	0	3	0	2	1	0	3	2	1	3	2	3	2	m
+Mordekaiser	top	100	1	0	3	2	0	1	2	2	2	2	3	2	m
+Morgana	utility,middle	100	1	1	1	3	3	3	0	0	2	2	2	2	d
+Naafiri	middle,jungle	0	0	0	3	2	0	0	0	1	1	3	3	1	m
+Nami	utility	100	1	1	1	1	2	3	0	0	2	2	2	2	d
+Nasus	top	15	0	0	1	1	0	2	2	3	2	0	2	3	m
+Nautilus	utility	100	3	0	2	3	2	3	3	0	3	3	3	2	m
+Neeko	middle,utility	100	3	2	2	2	0	3	0	0	3	2	3	2	d
+Nidalee	jungle	100	0	3	2	1	0	0	0	1	1	3	2	1	d
+Nilah	bottom	0	1	0	3	0	0	1	0	0	3	1	3	3	m
+Nocturne	jungle	0	3	0	3	3	0	2	1	1	2	2	3	2	m
+Nunu	jungle	100	3	0	2	3	1	3	2	0	3	3	3	2	m
+Olaf	jungle,top	0	1	1	3	1	0	1	2	1	2	3	3	1	m
+Orianna	middle	100	2	2	1	1	3	3	0	0	3	2	3	3	d
+Ornn	top	50	3	0	2	1	1	3	3	1	3	2	3	3	m
+Pantheon	top,middle,utility,jungle	0	2	1	3	2	1	2	1	1	2	3	3	1	m
+Poppy	top,jungle,utility	0	2	0	2	2	3	3	2	1	2	2	3	2	m
+Pyke	utility	0	2	0	3	3	0	2	0	0	2	3	3	1	m
+Qiyana	middle,jungle	0	2	0	3	2	0	2	0	1	3	2	3	2	m
+Quinn	top	0	0	1	2	2	0	1	0	3	1	3	2	1	d
+Rakan	utility	100	3	0	2	1	2	3	1	0	3	2	3	2	m
+Rammus	jungle	100	3	0	2	2	2	3	3	0	2	2	3	2	m
+RekSai	jungle	0	2	0	3	2	0	2	1	1	2	3	3	1	m
+Rell	utility	100	3	0	2	1	2	3	3	0	3	2	3	2	m
+Renata	utility	100	1	1	0	0	3	3	0	0	3	2	2	2	d
+Renekton	top	0	2	0	3	1	0	2	2	2	2	3	3	1	m
+Rengar	jungle,top	0	0	0	3	3	0	1	0	1	1	2	3	2	m
+Riven	top	0	2	0	3	1	0	2	1	2	2	3	3	2	m
+Rumble	top,middle	100	1	1	2	0	0	2	1	1	3	3	3	2	m
+Ryze	middle,top	100	0	1	1	1	0	2	0	2	2	1	3	3	d
+Samira	bottom	0	1	0	3	0	0	1	0	0	3	2	3	2	d
+Sejuani	jungle,top	100	3	0	2	2	2	3	3	0	3	2	3	2	m
+Senna	utility,bottom	0	0	3	1	2	2	2	0	0	2	2	2	3	d
+Seraphine	utility,bottom,middle	100	2	2	0	1	2	3	0	0	3	1	2	3	d
+Sett	top,utility	0	2	0	3	1	1	2	2	1	3	3	3	2	m
+Shaco	jungle,utility	55	0	0	2	3	0	1	0	2	1	3	2	1	m
+Shen	top,utility	30	3	0	2	1	3	2	2	2	2	2	3	2	m
+Shyvana	jungle	60	2	0	2	1	0	1	2	1	3	1	3	3	m
+Singed	top	100	1	0	1	2	1	2	2	2	2	1	2	2	m
+Sion	top	20	3	0	2	1	1	3	3	2	3	2	3	3	m
+Sivir	bottom	0	0	2	0	0	1	0	0	1	3	1	2	3	d
+Skarner	jungle,top	30	3	0	2	3	2	3	3	0	2	2	3	2	m
+Smolder	bottom,middle	50	0	2	0	0	0	1	0	1	3	1	2	3	d
+Sona	utility	100	1	2	0	0	2	2	0	0	3	1	2	3	d
+Soraka	utility	100	0	1	0	0	3	2	0	0	2	1	2	3	d
+Swain	utility,middle,bottom	100	2	1	2	2	1	3	2	0	3	2	3	2	d
+Sylas	middle,jungle	100	2	0	3	2	0	2	1	1	3	2	3	2	m
+Syndra	middle	100	0	2	3	3	1	3	0	1	2	2	3	3	d
+TahmKench	top,utility	100	1	0	1	2	3	2	3	1	2	2	2	2	m
+Taliyah	jungle,middle	100	1	2	2	2	1	3	0	1	2	2	3	2	d
+Talon	middle,jungle	0	0	0	3	3	0	1	0	2	1	3	3	1	m
+Taric	utility	100	2	0	1	1	3	3	2	0	3	1	2	3	m
+Teemo	top	100	0	2	0	1	0	1	0	2	1	2	2	2	d
+Thresh	utility	100	2	0	2	3	3	3	1	0	3	2	3	2	d
+Tristana	bottom,middle	0	0	1	2	0	1	1	0	2	2	2	3	3	d
+Trundle	jungle,top	0	1	0	2	2	0	2	1	3	2	3	3	2	m
+Tryndamere	top	0	0	0	2	1	0	0	0	3	1	2	3	3	m
+TwistedFate	middle	100	0	1	1	3	0	2	0	2	1	1	3	2	d
+Twitch	bottom,jungle	30	0	1	2	1	0	1	0	0	3	1	2	3	d
+Udyr	jungle,top	50	2	0	2	1	0	2	2	2	2	3	3	2	m
+Urgot	top	0	1	1	2	2	0	2	2	2	2	2	3	2	m
+Varus	bottom,middle	40	2	3	1	2	0	2	0	0	2	2	3	2	d
+Vayne	bottom,top	0	0	0	1	1	1	1	0	3	2	1	2	3	d
+Veigar	middle	100	1	1	3	2	1	3	0	0	3	1	2	3	d
+Velkoz	middle,utility	100	0	3	1	1	0	2	0	0	2	2	3	2	d
+Vex	middle	100	2	1	3	1	2	3	0	0	3	2	3	2	d
+Vi	jungle	0	3	0	3	3	0	2	1	0	2	3	3	2	m
+Viego	jungle	0	1	0	3	1	0	1	1	1	3	2	3	2	m
+Viktor	middle	100	0	3	1	1	1	2	0	1	3	1	3	3	d
+Vladimir	middle,top	100	1	1	2	0	0	1	0	1	3	1	3	3	d
+Volibear	top,jungle	50	2	0	3	2	0	2	2	1	2	3	3	1	m
+Warwick	jungle,top	50	2	0	2	3	0	2	2	1	2	3	3	1	m
+Xayah	bottom	0	0	1	1	1	1	2	0	0	2	2	3	3	d
+Xerath	middle,utility	100	0	3	1	2	0	2	0	0	2	2	3	2	d
+XinZhao	jungle	0	2	0	3	2	0	2	1	1	2	3	3	1	m
+Yasuo	middle,top,bottom	0	1	0	3	1	1	2	0	2	3	2	3	2	m
+Yone	middle,top	0	2	0	3	1	0	2	0	2	3	2	3	3	m
+Yorick	top	0	0	0	1	0	0	1	1	3	1	1	3	3	m
+Yunara	bottom	0	0	1	1	0	0	0	0	1	3	1	2	3	d
+Yuumi	utility	100	0	1	0	0	3	1	0	0	2	1	2	2	d
+Zaahen	top,jungle	0	1	0	2	1	0	1	2	2	2	2	3	3	m
+Zac	jungle,top,utility	100	3	0	3	2	2	3	3	0	3	2	3	2	m
+Zed	middle,jungle	0	0	1	3	3	0	0	0	3	1	2	3	1	m
+Zeri	bottom	30	0	1	1	0	0	0	0	1	3	1	2	3	d
+Ziggs	middle,bottom	100	0	3	1	0	1	2	0	3	2	2	3	2	d
+Zilean	utility,middle	100	0	2	0	1	3	3	0	0	2	1	2	3	d
+Zoe	middle	100	0	3	3	3	0	2	0	0	1	2	3	1	d
+Zyra	utility,jungle	100	1	3	2	2	1	3	0	0	3	2	3	1	d

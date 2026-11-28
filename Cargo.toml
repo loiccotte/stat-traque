@@ -1,19 +1,65 @@
-﻿[package]
+[package]
 name = "stat-traque"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
-# reqwest : pour faire des requêtes HTTP (au client LoL et à Data Dragon).
-# native-tls = utilise le chiffrement de Windows (plus léger à compiler).
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls"] }
-# serde_json : pour lire le JSON renvoyé par le client.
+# ureq : client HTTP synchrone, SANS runtime async (tokio). Remplace reqwest :
+# moins de threads, moins de RAM, exe plus petit.
+ureq = { version = "2.12", default-features = false, features = ["json", "native-tls"] }
+# native-tls : chiffrement du système (schannel sous Windows) -> rien à embarquer.
+native-tls = "0.2"
+# tungstenite : WebSocket minimal, pour recevoir les événements du client LoL
+# au lieu de l'interroger toutes les secondes.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake", "native-tls"] }
 serde_json = "1"
-# base64 : le client LoL demande un mot de passe encodé en base64.
+# serde (déjà tiré par serde_json) + `derive` : l'état d'affichage est envoyé en JSON
+# au processus de la fenêtre (une ligne par changement). `rc` : sérialiser les `Arc`.
+# Coût mesuré : voir docs/METHODE.md (« Mesures T07 »).
+serde = { version = "1", features = ["derive", "rc"] }
 base64 = "0.22"
+# png : décodage des icônes de champions (T-02). Déjà compilé via eframe -> image : coût nul en nouvelle compilation.
+png = "0.18"
+
+[target.'cfg(windows)'.dependencies]
+# Appels Windows bruts (icône de la barre des tâches). Pas de framework : coût ~0.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse", # RegisterHotKey : raccourci de l'overlay
+    "Win32_System_ProcessStatus",      # RAM du processus (commande `essai-fenetre`)
+    "Win32_UI_HiDpi",                  # netteté sur écran à 125 % / 150 % (overlay, menu)
+    "Win32_System_Registry",       # lancement avec Windows (clé Run) : coût ~0
+    "Win32_Security_Cryptography", # SHA-256 de la mise à jour (bcrypt.dll) : coût ~0
+    "Win32_Storage_FileSystem",    # renommage durable de la mise à jour (MoveFileExW) : coût ~0
+    "Win32_System_DataExchange",   # presse-papiers (« Copier pour Discord ») : coût ~0
+    "Win32_System_Memory",         # GlobalAlloc du texte copié : coût ~0
+] }
+# Fenêtre et overlay : egui (interface "immédiate" : on redessine tout à chaque image)
+# via eframe, rendu OpenGL (`glow`). Toutes les options par défaut sont coupées :
+# pas de wgpu (lourd), pas de x11/wayland (Linux), pas de presse-papiers, de liens
+# ni de lecteur d'écran. Seulement : glow + police par défaut d'egui.
+# Coût mesuré (exe Windows release) : voir docs/METHODE.md, section « Mesures T07 ».
+# RAM : la fenêtre vit dans un processus à part (`--fenetre`), qui meurt à la fermeture.
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
+
+# Linux = développement seulement : la même fenêtre, via X11, pour compiler/tester
+# l'interface et mesurer sa RAM (Xvfb). Rien de tout ça n'entre dans l'exe Windows.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11"] }
 
 # Pour un .exe le plus petit et rapide possible quand on compile en "release".
 [profile.release]
 opt-level = "s"
 lto = true
 strip = true
+codegen-units = 1   # meilleure optimisation globale (compile plus lentement)
+panic = "abort"     # pas de code de "déroulage" des erreurs : exe plus petit
